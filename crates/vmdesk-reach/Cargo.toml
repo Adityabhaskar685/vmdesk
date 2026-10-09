@@ -1,0 +1,19 @@
+[package]
+name = "vmdesk-reach"
+description = "RouteInspector per OS, network-change watcher, reachability scheduler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+vmdesk-core.workspace = true
+vmdesk-transport.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "process"] }
+futures.workspace = true
+async-trait.workspace = true
+netdev.workspace = true
+if-watch.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

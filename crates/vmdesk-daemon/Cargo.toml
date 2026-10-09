@@ -1,0 +1,35 @@
+[package]
+name = "vmdesk-daemon"
+description = "Laptop binary: `vmdesk serve | proxy | import`"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vmdesk"
+path = "src/main.rs"
+
+[features]
+default   = []
+aws       = ["vmdesk-providers/aws"]
+openstack = ["vmdesk-providers/openstack"]
+gcp       = ["vmdesk-providers/gcp"]
+azure     = ["vmdesk-providers/azure"]
+
+[dependencies]
+vmdesk-core.workspace = true
+vmdesk-db.workspace = true
+vmdesk-transport.workspace = true
+vmdesk-reach.workspace = true
+vmdesk-collect = { workspace = true, features = ["remote"] }
+vmdesk-providers.workspace = true
+vmdesk-api.workspace = true
+actix-web.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "vmdesk-proto"
+description = "Snapshot, Event and agent wire-protocol types shared by laptop and agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[lints]
+workspace = true

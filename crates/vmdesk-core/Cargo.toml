@@ -1,0 +1,21 @@
+[package]
+name = "vmdesk-core"
+description = "Domain model and traits: Provider, HopConnector, Collector"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+vmdesk-proto.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

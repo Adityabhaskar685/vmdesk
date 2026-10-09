@@ -1,0 +1,27 @@
+[package]
+name = "vmdesk-agent"
+description = "VM-side daemon: collector loop, local event log, NDJSON stream over SSH stdio"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vmdesk-agent"
+path = "src/main.rs"
+
+[dependencies]
+vmdesk-proto.workspace = true
+vmdesk-collect = { workspace = true, default-features = false }   # parsers only, no russh
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "time", "process", "signal", "fs", "sync"] }
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+
+[lints]
+workspace = true

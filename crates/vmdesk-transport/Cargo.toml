@@ -1,0 +1,24 @@
+[package]
+name = "vmdesk-transport"
+description = "Russh client, ConnectionPath builder, Direct/Jump hops, session cache, `vmdesk proxy`"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+vmdesk-core.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "sync"] }
+tokio-util.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+keyring.workspace = true
+dirs.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

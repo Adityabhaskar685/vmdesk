@@ -1,0 +1,103 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vmdesk-proto",
+    "crates/vmdesk-core",
+    "crates/vmdesk-db",
+    "crates/vmdesk-transport",
+    "crates/vmdesk-reach",
+    "crates/vmdesk-collect",
+    "crates/vmdesk-providers",
+    "crates/vmdesk-api",
+    "crates/vmdesk-daemon",
+    "crates/vmdesk-agent",
+]
+default_members = ["crates/vmdesk-daemon"]
+
+[workspace.package]
+name = "vmdesk"
+version = "0.1.0"
+edition = "2024"
+authors = ["Aditya Bhaskar"]
+
+[workspace.dependencies]
+# internal crates
+vmdesk-proto       = { path = "crates/vmdesk-proto"}
+vmdesk-core        = { path = "crates/vmdesk-core"}
+vmdesk-db          = { path = "crates/vmdesk-db" }
+vmdesk-transport   = { path = "crates/vmdesk-transport" }
+vmdesk-reach       = { path = "crates/vmdesk-reach" }
+vmdesk-collect     = { path = "crates/vmdesk-collect", default-features = false}
+vmdesk-providers   = { path = "crates/vmdesk-providers" }
+vmdesk-api         = { path = "crates/vmdesk-api" }
+
+
+# async / runtime
+tokio       = "1"    # features chosen per crates
+tokio-util  = { version = "0.7", features = ["codec", "io"]}
+futures     = "0.3"
+async-trait = "0.1"
+bytes       = "1"
+
+# serialization / types
+serde       =  { version = "1", features = ["derive"]}
+serde_json  =  "1"
+uuid        =  { version = "1", features = ["v7", "serde"]}
+chrono      =  { version = "0.4", default-features = false, features = ["clock", "serde", "std"]}
+
+# errors / logging / cli
+thiserror          = "2"
+anyhow             = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]}
+clap               = { version = "4", features = ["derive", "env"]}
+
+
+# storage
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "uuid", "chrono", "json"]}
+zstd = "0.13"
+
+# ssh 
+russh      = "0.64"
+russh-sftp = "3"
+
+# web
+actix-web   = "4"
+actix-ws    = "0.3"
+
+# networking / platform
+netdev      = "0.46"
+if-watch    = { version = "3", features = ["tokio"]}
+
+# misc
+regex   =  "1"
+sha2    =  "0.10"
+hex     =  "0.4"
+keyring =  "3"
+dirs    =  "7"
+reqwest =  { version = "0.12", default-features = false, features = ["json", "rustls-tls"]}
+
+# cloud (optional, feature-gated in vmdesk-providers)
+aws-config = { version = "1.12.0", features = ["behavior-version-latest"] }
+aws-sdk-ec2 = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all           = { level = "warn", priority = -1 }
+pedantic      = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+[profile.release]
+lto = "strip"
+codgen-units = 1
+strip = "symbols"
+
+# small static agent binary: cargo build -p vmdesk-agent --profile agent --target x86_64_unknown-linux-musl
+[profile.agent]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+panic = "abort"
