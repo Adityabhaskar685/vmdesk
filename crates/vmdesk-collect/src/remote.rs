@@ -81,8 +81,16 @@ pub async fn poll_forever(db: &Db) -> vmdesk_db::Result<()> {
     let mut last: HashMap<VmId, std::time::Instant> = HashMap::new();
     loop {
         tick.tick().await;
-        let vms = db.list_vms(&ListFilter::default()).await?;
-        let status = db.all_status().await?;
+        let (vms, status) = match (
+            db.list_vms(&ListFilter::default()).await,
+            db.all_status().await,
+        ) {
+            (Ok(v), Ok(s)) => (v, s),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!(error = %e, "reading the inventory; retrying next tick");
+                continue;
+            }
+        };
         let inventory: HashMap<VmId, Vm> = vms.iter().map(|v| (v.id, v.clone())).collect();
         let due: Vec<Vm> = vms
             .iter()

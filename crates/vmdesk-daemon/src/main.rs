@@ -1,5 +1,6 @@
 //! `vmdesk`: the laptop daemon and CLI.
 
+mod askpass;
 mod remote;
 mod show;
 mod status;
@@ -33,6 +34,27 @@ struct Cli {
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(clap::Args)]
+struct AddArgs {
+    /// Name to refer to it by.
+    name: String,
+    /// IP address or hostname.
+    address: String,
+    #[arg(short, long, default_value_t = 22)]
+    port: u16,
+    /// Login user (default: your local user).
+    #[arg(short = 'l', long)]
+    user: Option<String>,
+    /// Reach it through this jump host; repeat for a chain, nearest first.
+    #[arg(long, value_name = "VM")]
+    via: Vec<String>,
+    /// Private key file to authenticate with.
+    #[arg(long, value_name = "PATH")]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    tag: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -99,31 +121,27 @@ enum Cmd {
         #[arg(long)]
         accept_new_host_keys: bool,
     },
+    /// Remove a VM from the inventory, with its stored password, host keys and history.
+    Remove {
+        /// VM name, alias or id.
+        vm: String,
+    },
+    /// `SSH_ASKPASS` helper for "Open terminal": answers a VM's password prompt from the
+    /// keychain and passes other prompts to the user.
+    #[command(hide = true)]
+    Askpass {
+        /// Keychain entry holding the password.
+        entry: String,
+        /// The prompt `ssh` shows.
+        prompt: Option<String>,
+    },
     /// Remove a VM's stored host keys, e.g. after it was reinstalled.
     ForgetHostKey {
         /// VM name, alias or id.
         vm: String,
     },
     /// Add a VM by hand.
-    Add {
-        /// Name to refer to it by.
-        name: String,
-        /// IP address or hostname.
-        address: String,
-        #[arg(short, long, default_value_t = 22)]
-        port: u16,
-        /// Login user (default: your local user).
-        #[arg(short = 'l', long)]
-        user: Option<String>,
-        /// Reach it through this jump host; repeat for a chain, nearest first.
-        #[arg(long, value_name = "VM")]
-        via: Vec<String>,
-        /// Private key file to authenticate with.
-        #[arg(long, value_name = "PATH")]
-        key: Option<PathBuf>,
-        #[arg(long)]
-        tag: Vec<String>,
-    },
+    Add(AddArgs),
     /// Store a VM's login password in the OS keychain and log in with it.
     ///
     /// Reads the password from the terminal, or the first line of stdin when piped.
@@ -207,49 +225,11 @@ fn main() -> anyhow::Result<ExitCode> {
             Cmd::ForgetHostKey { vm } => {
                 remote::forget_host_key(&open_db(&data_dir).await?, &vm).await?;
             }
-            Cmd::Add {
-                name,
-                address,
-                port,
-                user,
-                via,
-                key,
-                tag,
-            } => {
-                let db = open_db(&data_dir).await?;
-                let credential = key
-                    .as_deref()
-                    .map(key_credential)
-                    .transpose()?
-                    .unwrap_or_default();
-                let mut hops = Vec::new();
-                for v in &via {
-                    hops.push(Hop::Jump {
-                        via: remote::resolve(&db, v).await?.0.id,
-                    });
-                }
-                let paths = (!hops.is_empty()).then(|| {
-                    hops.push(Hop::Direct);
-                    vec![hops]
-                });
-                let vm = db
-                    .create_vm(NewVm {
-                        name,
-                        username: user.unwrap_or_else(vmdesk_api::local_username),
-                        credential,
-                        endpoints: vec![EndpointInput {
-                            address,
-                            port,
-                            kind: EndpointKind::default(),
-                            bind_interface: None,
-                        }],
-                        paths,
-                        tags: tag,
-                        favourite: false,
-                    })
-                    .await?;
-                println!("added {} ({})", vm.name, vm.id);
+            Cmd::Remove { vm } => remove(&open_db(&data_dir).await?, &vm).await?,
+            Cmd::Askpass { entry, prompt } => {
+                return Ok(askpass::askpass(&entry, prompt.as_deref().unwrap_or("")).await);
             }
+            Cmd::Add(args) => add(&open_db(&data_dir).await?, args).await?,
             Cmd::SetPassword { vm } => set_password(&open_db(&data_dir).await?, &vm).await?,
             Cmd::Show { vm, cached } => show::show(&open_db(&data_dir).await?, &vm, cached).await?,
             Cmd::Timeline { vm, limit } => {
@@ -423,6 +403,53 @@ async fn edit(
         CredentialRef::CloudProvider(p) => format!("cloud profile {p}"),
     };
     println!("{}: user {}, {auth}", vm.name, vm.username);
+    Ok(())
+}
+
+async fn add(db: &Db, args: AddArgs) -> anyhow::Result<()> {
+    let credential = args
+        .key
+        .as_deref()
+        .map(key_credential)
+        .transpose()?
+        .unwrap_or_default();
+    let mut hops = Vec::new();
+    for v in &args.via {
+        hops.push(Hop::Jump {
+            via: remote::resolve(db, v).await?.0.id,
+        });
+    }
+    let paths = (!hops.is_empty()).then(|| {
+        hops.push(Hop::Direct);
+        vec![hops]
+    });
+    let vm = db
+        .create_vm(NewVm {
+            name: args.name,
+            username: args.user.unwrap_or_else(vmdesk_api::local_username),
+            credential,
+            endpoints: vec![EndpointInput {
+                address: args.address,
+                port: args.port,
+                kind: EndpointKind::default(),
+                bind_interface: None,
+            }],
+            paths,
+            tags: args.tag,
+            favourite: false,
+        })
+        .await?;
+    println!("added {} ({})", vm.name, vm.id);
+    Ok(())
+}
+
+async fn remove(db: &Db, name: &str) -> anyhow::Result<()> {
+    let (vm, _) = remote::resolve(db, name).await?;
+    db.delete_vm(vm.id).await?;
+    if let CredentialRef::KeyChain(entry) = &vm.credential {
+        vmdesk_transport::keychain::delete_password(entry).await?;
+    }
+    println!("removed {}", vm.name);
     Ok(())
 }
 

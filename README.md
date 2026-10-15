@@ -19,15 +19,22 @@ knowing IPs, users or jump hosts. The desktop app starts at M5.
 | M2 | Transport: Russh over connection paths (direct + jump), `vmdesk exec`, `vmdesk proxy` | Done |
 | M3 | Reachability: route inspection, status signals, network-change monitor | Done |
 | M4 | SSH collector, snapshots, timeline | Done |
-| M5 | GPUI desktop app (MVP) | Next |
-| M6–M9 | Agent, work sessions, embedded libghostty terminal, first cloud provider | Planned |
+| M5 | GPUI desktop app (MVP) | Done |
+| M6 | On-VM agent: offline history | Next |
+| M7–M9 | Work sessions, embedded libghostty terminal, first cloud provider | Planned |
 
 ## Requirements
 
 - Stable Rust with edition 2024 support (1.85 or later)
-- Linux. macOS should work for M1 but is untested.
+- Linux. macOS should work for the CLI but is untested.
 
-SQLite is bundled through SQLx, so no system library is needed.
+SQLite is bundled through SQLx, so the CLI needs no system library. The desktop app uses
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) from Zed's `v1.24.2` release
+tag and needs these development packages on Debian/Ubuntu:
+
+```sh
+sudo apt install libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev clang cmake
+```
 
 ## Build
 
@@ -35,6 +42,51 @@ SQLite is bundled through SQLx, so no system library is needed.
 cargo build -p vmdesk-daemon          # produces target/debug/vmdesk
 cargo build -p vmdesk-daemon --release
 ```
+
+## Desktop app
+
+```sh
+cargo run -p vmdesk-app              # or target/debug/vmdesk-app
+cargo run -p vmdesk-app -- lab-07    # open with a VM selected
+```
+
+The window lists every VM with its status on the left, and the selected VM on the right: an
+overview (system, tmux, containers, ports, repos, processes) and its timeline. Type anywhere to
+filter the list, use ↑/↓ to move through it and Esc to clear the filter.
+
+- **+ Add VM** opens a form: name, address, port, user, how to log in (ssh-agent and default keys,
+  a key file, or a password kept in the OS keychain) and an optional jump host. Tab moves between
+  fields, Enter adds, Esc cancels.
+- **Edit** opens the same form filled in. Leave the password empty to keep the stored one;
+  the address and jump host are only saved if you change them.
+- **Review host key…** appears when a VM's key is new or has changed. A new key is shown with its
+  fingerprint and whether it matches your `~/.ssh/known_hosts`; **Trust this key** stores exactly
+  that key. A changed key can be forgotten (only do that after a reinstall) and the new one
+  reviewed.
+- The window draws its own title bar (GNOME does not decorate Wayland windows): drag it to move,
+  double-click to maximise, right-click for the window menu, and resize from the edges.
+- **Remove** deletes the VM from VMDesk after a confirmation, with its history, host keys and
+  stored password. The VM itself is not touched. A VM other VMs jump through cannot be removed.
+- **Check** re-runs the route and SSH check, **Refresh** collects a new snapshot, and the open VM
+  is re-collected every 2 minutes while it is reachable.
+- **Open terminal** writes an SSH config for the VM under `<data dir>/ssh/` and starts your terminal
+  with `ssh` in it. Jump hosts go through `vmdesk proxy`, so build the CLI as well. The terminal is
+  `$VMDESK_TERMINAL` if set (a command that takes the program to run, e.g. `ghostty -e`), else the
+  first of Ghostty, `x-terminal-emulator`, Ptyxis, GNOME Terminal, kitty and xterm.
+  `ssh` runs with `TERM=xterm-256color`, as Ghostty's `ssh-env` integration would set it: VMs
+  rarely have terminfo for `xterm-ghostty` or `xterm-kitty`.
+  For a VM with a stored password, `ssh` gets it from the keychain through `vmdesk askpass` (an
+  `SSH_ASKPASS` helper), so you are not asked. Only the first password prompt is answered; other
+  prompts, such as accepting a new host key or a retry after a wrong password, are shown to you.
+
+Memory: build with `--release` (about 70 MB on an Intel laptop; a debug build maps a much larger
+binary). At start the app re-executes itself once so the graphics loaders only load the Vulkan
+driver for the GPUs actually present and skip the GL probe; otherwise Mesa's software renderer and
+`libLLVM` add about 55 MB. Set `VMDESK_ALL_GPU_DRIVERS=1` to keep every driver (needed only on a
+machine without a hardware Vulkan driver).
+
+The app runs the same reachability monitor and snapshot poller as `vmdesk serve`, in the same
+process, on the same database as the CLI. Nothing else needs to be running.
 
 ## Usage
 
@@ -71,6 +123,9 @@ vmdesk add lab-07 172.16.9.89 -l root --via bastion-01
 
 # Log in with a password kept in the OS keychain (prompts, or reads a line from stdin)
 vmdesk set-password lab-07
+
+# Remove a VM, with its history, host keys and stored password
+vmdesk remove lab-07
 
 # Change the stored login (re-importing never overwrites it)
 vmdesk edit regal-dev-07 --user root
@@ -232,6 +287,7 @@ crates/
   vmdesk-providers/   Static and SSH config providers
   vmdesk-api/         Actix Web routes and token auth
   vmdesk-daemon/      The `vmdesk` binary: CLI and server
+  vmdesk-app/         The desktop app (GPUI)
   vmdesk-transport/   SSH transport: path builder, session cache, host keys, auth
   vmdesk-reach/       Route lookup, reachability checks, network-change monitor
   vmdesk-collect/     Probe script and parsers, snapshot diff to events, SSH collector, poller

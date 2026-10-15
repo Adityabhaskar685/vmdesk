@@ -17,6 +17,7 @@ const LAPTOP: &str = "laptop";
 
 impl Db {
     /// Stores `status` as the VM's latest. Returns the previous one if it differed.
+    /// A status for a VM that no longer exists is dropped.
     pub async fn save_status(&self, status: &VmStatus) -> Result<Option<VmStatus>> {
         let mut tx = self.pool().begin().await?;
         let vm = status.vm.to_string();
@@ -29,7 +30,7 @@ impl Db {
         .map(|row| status_from_row(&row))
         .transpose()?;
 
-        sqlx::query(
+        let saved = sqlx::query(
             "INSERT INTO status (vm_id, route, ssh, agent, checked_at, detail) \
             VALUES (?, ?, ?, ?, ?, ?) \
             ON CONFLICT (vm_id) DO UPDATE SET route = excluded.route, ssh = excluded.ssh, \
@@ -42,7 +43,13 @@ impl Db {
         .bind(status.checked_at.timestamp_millis())
         .bind(&status.detail)
         .execute(&mut *tx)
-        .await?;
+        .await;
+        match saved {
+            Ok(_) => {}
+            // The VM was removed while it was being checked: nothing to record.
+            Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
 
         let changed = previous.filter(|p| status.changed_from(p));
         if let Some(prev) = &changed {
@@ -177,6 +184,9 @@ mod tests {
         assert_eq!(db.all_status().await.unwrap().len(), 1);
 
         db.delete_vm(vm.id).await.unwrap();
+        assert!(db.get_status(vm.id).await.unwrap().is_none());
+        // A check that finishes after the VM was removed is dropped, not an error.
+        assert!(db.save_status(&s).await.unwrap().is_none());
         assert!(db.get_status(vm.id).await.unwrap().is_none());
     }
 }

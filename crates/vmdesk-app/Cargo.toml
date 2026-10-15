@@ -1,0 +1,31 @@
+[package]
+name = "vmdesk-app"
+description = "GPUI desktop app: inventory, status, VM detail and timeline, all in one process"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vmdesk-app"
+path = "src/main.rs"
+
+[dependencies]
+vmdesk-core.workspace = true
+vmdesk-proto.workspace = true
+vmdesk-db.workspace = true
+vmdesk-transport.workspace = true
+vmdesk-reach.workspace = true
+vmdesk-collect = { workspace = true, features = ["remote"] }
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "fs", "process"] }
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

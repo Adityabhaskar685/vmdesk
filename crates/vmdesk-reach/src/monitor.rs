@@ -98,7 +98,13 @@ impl Monitor {
                     everything = true;
                 }
             }
-            let vms = self.db.list_vms(&ListFilter::default()).await?;
+            let vms = match self.db.list_vms(&ListFilter::default()).await {
+                Ok(vms) => vms,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reading the inventory; retrying next tick");
+                    continue;
+                }
+            };
             let inventory: HashMap<VmId, Vm> = vms.iter().map(|v| (v.id, v.clone())).collect();
             let due: Vec<Vm> = vms
                 .into_iter()
@@ -116,7 +122,15 @@ impl Monitor {
             if due.is_empty() {
                 continue;
             }
-            for c in self.round(due, &inventory, false).await? {
+            // One bad round must not stop the monitor for the rest of the session.
+            let checked = match self.round(due, &inventory, false).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reachability round failed; retrying next tick");
+                    continue;
+                }
+            };
+            for c in checked {
                 last.insert(c.vm.id, Instant::now());
                 if c.previous.is_some() {
                     on_change(&c);

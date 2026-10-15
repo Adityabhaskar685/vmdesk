@@ -36,3 +36,13 @@ pub async fn set_password(name: &str, password: &str) -> Result<()> {
     })
     .await
 }
+
+/// Removes the entry; a missing entry is not an error.
+pub async fn delete_password(name: &str) -> Result<()> {
+    let name = name.to_owned();
+    blocking(move || match entry(&name)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(Error::Other(format!("keychain: {e}"))),
+    })
+    .await
+}

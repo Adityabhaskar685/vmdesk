@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, Utc};
 use vmdesk_core::HostKeyStore;
-use vmdesk_db::{Db, TimelineEntry};
+use vmdesk_db::Db;
 use vmdesk_proto::Snapshot;
 use vmdesk_transport::Transport;
 
@@ -31,14 +31,9 @@ pub async fn show(db: &Db, name: &str, cached: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Time since a Unix timestamp, e.g. `3h05m`.
 fn ago(secs: i64) -> String {
-    let d = (Utc::now().timestamp() - secs).max(0);
-    match d {
-        0..60 => format!("{d}s"),
-        60..3600 => format!("{}m", d / 60),
-        3600..86_400 => format!("{}h{:02}m", d / 3600, d % 3600 / 60),
-        _ => format!("{}d{}h", d / 86_400, d % 86_400 / 3600),
-    }
+    vmdesk_core::human_duration(Utc::now().timestamp() - secs)
 }
 
 fn gb(kb: u64) -> String {
@@ -212,43 +207,11 @@ pub async fn timeline(db: &Db, name: &str, limit: u32) -> anyhow::Result<()> {
     }
     entries.reverse();
     for e in &entries {
-        println!("{}  {:<20} {}", local(e.ts), e.kind, summary(e));
+        println!("{}  {:<20} {}", local(e.ts), e.kind, e.summary());
     }
     Ok(())
 }
 
 fn local(ts: DateTime<Utc>) -> String {
     ts.with_timezone(&Local).format("%m-%d %H:%M").to_string()
-}
-
-/// One line per event, from its JSON data.
-fn summary(e: &TimelineEntry) -> String {
-    let d = &e.data;
-    let s = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
-    match e.kind.as_str() {
-        "process_started" => format!("{}  (in {})", s("cmdline"), s("cwd")),
-        "process_exited" => match d.get("duration_secs").and_then(serde_json::Value::as_u64) {
-            Some(secs) => format!(
-                "{}  (ran at least {})",
-                s("cmdline"),
-                ago(Utc::now().timestamp() - i64::try_from(secs).unwrap_or(0))
-            ),
-            None => s("cmdline"),
-        },
-        "container_started" | "container_stopped" => format!("{} ({})", s("name"), s("image")),
-        "tmux_created" | "tmux_closed" | "tmux_attached" => s("name"),
-        "git_branch_changed" => format!("{}: {} -> {}", s("repo"), s("from"), s("to")),
-        "git_committed" => format!("{} on {}: {}", s("repo"), s("branch"), s("subject")),
-        "git_dirty_changed" => format!("{}: {} -> {} modified", s("repo"), d["from"], d["to"]),
-        "listener_opened" => format!("{}:{} {}", s("addr"), d["port"], s("process")),
-        "listener_closed" => format!("{}:{}", s("addr"), d["port"]),
-        "status_changed" => format!(
-            "ssh {} -> {} (route {})",
-            d["previous"]["ssh"].as_str().unwrap_or("?"),
-            s("ssh"),
-            s("route")
-        ),
-        "gap" => format!("not observed since {}", s("from")),
-        _ => d.to_string(),
-    }
 }
