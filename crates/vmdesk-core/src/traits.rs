@@ -4,18 +4,21 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 use vmdesk_proto::{Event, Snapshot};
 
-use crate::{ConnectionPath, Endpoint, Hop, Lifecycle, ProviderId, Result};
+use crate::{CredentialRef, Endpoint, Hop, Lifecycle, ProviderId, Result};
 
 /// A VM record as reported by an inventory source.
 #[derive(Debug, Clone)]
 pub struct ProviderVm {
+    /// Stable ID within the provider (SSH config alias, cloud instance ID).
     pub external_ref: String,
     pub name: String,
     pub username: Option<String>,
+    pub credential: Option<CredentialRef>,
     pub endpoints: Vec<Endpoint>,
     pub labels: BTreeMap<String, String>,
     pub lifecycle: Lifecycle,
-    pub suggested_paths: Vec<ConnectionPath>,
+    /// Jump hosts to traverse in order, named by externel ref, alias or VM name.
+    pub jump_via: Vec<String>,
 }
 
 /// Where VMs comes from. Read-only: never creates or delete machines.

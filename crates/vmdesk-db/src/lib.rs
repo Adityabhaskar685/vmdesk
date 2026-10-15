@@ -1,10 +1,16 @@
-//! `SQLite` persistance: connection pool, migrations, queries.
+//! `SQLite` persistance: connection pool, migrations, inventory and provider sync.
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
-use std::path::Path;
+mod error;
+mod inventory;
+mod sync;
+
 use std::str::FromStr;
 
-pub use sqlx::Error;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+
+pub use error::{Error, Result};
+pub use inventory::{EndpointInput, ListFilter, NewVm, VmPatch};
+pub use sync::SyncReport;
 
 #[derive(Clone)]
 pub struct Db {
@@ -13,7 +19,7 @@ pub struct Db {
 
 impl Db {
     /// Opens (creates if needed) the database file and runs migrations.
-    pub async fn open(path: &Path) -> Result<Self, Error> {
+    pub async fn open(path: &std::path::Path) -> Result<Self, Error> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -42,10 +48,10 @@ impl Db {
         &self.pool
     }
 
-    pub async fn vm_count(&self) -> Result<i64, Error> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM vms")
+    pub async fn vm_count(&self) -> Result<i64> {
+        Ok(sqlx::query_scalar("SELECT COUNT(*) FROM vms")
             .fetch_one(&self.pool)
-            .await
+            .await?)
     }
 }
 

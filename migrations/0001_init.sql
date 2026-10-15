@@ -13,7 +13,7 @@ CREATE TABLE vms (
     external_ref      TEXT,
     name              TEXT NOT NULL,
     username          TEXT NOT NULL,
-    creadential_ref   TEXT NOT NULL,
+    credential_ref    TEXT NOT NULL,
     lifecycle         TEXT NOT NULL DEFAULT 'unknown',
     favourite         INTEGER NOT NULL DEFAULT 0,
     created_at        INTEGER NOT NULL,

@@ -2,6 +2,8 @@
 
 pub mod ssh_config;
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use vmdesk_core::{Error, Lifecycle, Provider, ProviderId, ProviderVm, Result};
 
@@ -13,7 +15,7 @@ pub struct StaticProvider {
 impl Default for StaticProvider {
     fn default() -> Self {
         Self {
-            id: ProviderId("static".into()),
+            id: ProviderId::new(ProviderId::STATIC),
         }
     }
 }
@@ -28,8 +30,7 @@ impl Provider for StaticProvider {
         Ok(Vec::new())
     }
 
-    async fn lifecycle(&self, external_ref: &str) -> Result<Lifecycle> {
-        let _ = external_ref;
+    async fn lifecycle(&self, _external_ref: &str) -> Result<Lifecycle> {
         Ok(Lifecycle::Unknown)
     }
     fn supports_sync(&self) -> bool {
@@ -40,21 +41,27 @@ impl Provider for StaticProvider {
 /// Import `Host` blocks from an SSH config file.
 pub struct SshConfigProvider {
     id: ProviderId,
-    path: std::path::PathBuf,
+    path: PathBuf,
 }
 
 impl SshConfigProvider {
     #[must_use]
-    pub fn new(path: std::path::PathBuf) -> Self {
+    pub fn new(path: PathBuf) -> Self {
         Self {
-            id: ProviderId("ssh-config".into()),
+            id: ProviderId::new(ProviderId::SSH_CONFIG),
             path,
         }
     }
 
     /// `~/.ssh/config`, if a home directory is known.
-    pub fn default_path() -> Option<std::path::PathBuf> {
+    #[must_use]
+    pub fn default_path() -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join(".ssh").join("config"))
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 }
 
@@ -68,7 +75,8 @@ impl Provider for SshConfigProvider {
         let text = tokio::fs::read_to_string(&self.path)
             .await
             .map_err(Error::Io)?;
-        Ok(ssh_config::parse(&text)
+        let home = dirs::home_dir();
+        Ok(ssh_config::parse(&text, home.as_deref())
             .into_iter()
             .map(ssh_config::HostEntry::into_provider_vm)
             .collect())

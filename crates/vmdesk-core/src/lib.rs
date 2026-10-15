@@ -12,5 +12,5 @@ pub use traits::{
     ByteStream, Collector, ExecOutput, HopConnector, Provider, ProviderVm, RemoteExec,
 };
 pub use vm::{
-    CredentialRef, Endpoint, EndpointKind, EndpointSource, Lifecycle, ProviderId, Vm, VmId,
+    ALIASES_LABEL, CredentialRef, Endpoint, EndpointKind, Lifecycle, Origin, ProviderId, Vm, VmId,
 };
