@@ -3,12 +3,12 @@
 A local-first, single-user tool for keeping track of the development VMs you work on: where they
 are, how to reach them, and (in later milestones) what you were doing on each one.
 
-VMDesk will be a native desktop app built with
-[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Zed's UI framework), with an
-embedded terminal based on libghostty. Everything runs in one process on your laptop: state lives in
-a local SQLite database and every VM is reached over SSH. The `vmdesk` CLI and a local HTTP API sit
-beside the app as the machine interface, so coding agents and scripts can find and reach VMs without
-knowing IPs, users or jump hosts. The desktop app starts at M5.
+VMDesk is a native desktop app built with
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Zed's UI framework). Everything
+runs in one process on your laptop: state lives in a local SQLite database and every VM is reached
+over SSH, directly or through jump hosts. The `vmdesk` CLI and a local HTTP API sit beside the app
+as the machine interface, so coding agents and scripts can find and reach VMs without knowing IPs,
+users or jump hosts. Nothing is installed on the VMs.
 
 ## Status
 
@@ -25,8 +25,9 @@ knowing IPs, users or jump hosts. The desktop app starts at M5.
 
 ## Requirements
 
-- Stable Rust with edition 2024 support (1.85 or later)
-- Linux. macOS should work for the CLI but is untested.
+- Stable Rust (edition 2024; built and tested with 1.97)
+- Linux with a Vulkan GPU driver for the desktop app. macOS should work for the CLI but is
+  untested.
 
 SQLite is bundled through SQLx, so the CLI needs no system library. The desktop app uses
 [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) from Zed's `v1.24.2` release
@@ -39,54 +40,72 @@ sudo apt install libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfi
 ## Build
 
 ```sh
-cargo build -p vmdesk-daemon          # produces target/debug/vmdesk
-cargo build -p vmdesk-daemon --release
+cargo build --release -p vmdesk-daemon -p vmdesk-app
+# target/release/vmdesk      the CLI and API server
+# target/release/vmdesk-app  the desktop app
 ```
+
+Build both: the app's "Open terminal" runs `vmdesk proxy` and `vmdesk askpass` from the same
+directory. The first build of the app takes several minutes (GPUI and its dependencies come from
+the Zed repository). Use release builds for daily use; a debug build of the app uses about twice
+the memory.
 
 ## Desktop app
 
 ```sh
-cargo run -p vmdesk-app              # or target/debug/vmdesk-app
-cargo run -p vmdesk-app -- lab-07    # open with a VM selected
+target/release/vmdesk-app            # or: cargo run --release -p vmdesk-app
+target/release/vmdesk-app lab-07     # open with a VM selected (name, alias or id)
 ```
 
-The window lists every VM with its status on the left, and the selected VM on the right: an
-overview (system, tmux, containers, ports, repos, processes) and its timeline. Type anywhere to
-filter the list, use ↑/↓ to move through it and Esc to clear the filter.
+The left side lists every VM with a status dot (green online, amber SSH failing, red no route,
+grey not checked) and the network interface that reaches it. The right side shows the selected
+VM: its address and path, status, an **Overview** of its last snapshot (system, tmux, containers,
+listening ports, repos, processes) and its **Timeline**. Type anywhere to filter the list, use ↑/↓
+to move through it and Esc to clear the filter.
+
+Managing VMs:
 
 - **+ Add VM** opens a form: name, address, port, user, how to log in (ssh-agent and default keys,
   a key file, or a password kept in the OS keychain) and an optional jump host. Tab moves between
-  fields, Enter adds, Esc cancels.
-- **Edit** opens the same form filled in. Leave the password empty to keep the stored one;
-  the address and jump host are only saved if you change them.
-- **Review host key…** appears when a VM's key is new or has changed. A new key is shown with its
-  fingerprint and whether it matches your `~/.ssh/known_hosts`; **Trust this key** stores exactly
-  that key. A changed key can be forgotten (only do that after a reinstall) and the new one
-  reviewed.
-- The window draws its own title bar (GNOME does not decorate Wayland windows): drag it to move,
-  double-click to maximise, right-click for the window menu, and resize from the edges.
+  fields, Ctrl+V pastes, Enter saves, Esc cancels. The new VM is checked right away.
+- **Edit** opens the same form filled in. Leave the password empty to keep the stored one; the
+  address and jump host are only saved if you change them, so editing an imported VM's user
+  leaves its imported connection alone.
 - **Remove** deletes the VM from VMDesk after a confirmation, with its history, host keys and
-  stored password. The VM itself is not touched. A VM other VMs jump through cannot be removed.
-- **Check** re-runs the route and SSH check, **Refresh** collects a new snapshot, and the open VM
-  is re-collected every 2 minutes while it is reachable.
-- **Open terminal** writes an SSH config for the VM under `<data dir>/ssh/` and starts your terminal
-  with `ssh` in it. Jump hosts go through `vmdesk proxy`, so build the CLI as well. The terminal is
-  `$VMDESK_TERMINAL` if set (a command that takes the program to run, e.g. `ghostty -e`), else the
-  first of Ghostty, `x-terminal-emulator`, Ptyxis, GNOME Terminal, kitty and xterm.
-  `ssh` runs with `TERM=xterm-256color`, as Ghostty's `ssh-env` integration would set it: VMs
-  rarely have terminfo for `xterm-ghostty` or `xterm-kitty`.
-  For a VM with a stored password, `ssh` gets it from the keychain through `vmdesk askpass` (an
-  `SSH_ASKPASS` helper), so you are not asked. Only the first password prompt is answered; other
-  prompts, such as accepting a new host key or a retry after a wrong password, are shown to you.
+  stored password. The VM itself is not touched. A VM that others jump through cannot be removed.
 
-Memory: build with `--release` (about 70 MB on an Intel laptop; a debug build maps a much larger
-binary). At start the app re-executes itself once so the graphics loaders only load the Vulkan
-driver for the GPUs actually present and skip the GL probe; otherwise Mesa's software renderer and
-`libLLVM` add about 55 MB. Set `VMDESK_ALL_GPU_DRIVERS=1` to keep every driver (needed only on a
-machine without a hardware Vulkan driver).
+Working with a VM:
+
+- **Check** re-runs the route and SSH check. **Refresh** collects a new snapshot; the open VM is
+  also re-collected every 2 minutes while it is reachable.
+- **Open terminal** writes an SSH config for the VM under `<data dir>/ssh/` and starts your terminal
+  with `ssh` in it, over the same path VMDesk uses (jump hosts through `vmdesk proxy`).
+  - The terminal is `$VMDESK_TERMINAL` if set (a command that takes the program to run, e.g.
+    `ghostty -e`), else the first installed of Ghostty, `x-terminal-emulator`, Ptyxis,
+    GNOME Terminal, kitty and xterm.
+  - `ssh` runs with `TERM=xterm-256color` and `COLORTERM=truecolor`, as Ghostty's `ssh-env`
+    integration would set them: VMs rarely have terminfo for `xterm-ghostty` or `xterm-kitty`.
+  - For a VM with a stored password, `ssh` gets it from the keychain through `vmdesk askpass` (an
+    `SSH_ASKPASS` helper), so you are not asked. Only the first password prompt is answered; other
+    prompts, such as accepting a new host key or a retry after a wrong password, are shown to you.
+- **Review host key…** appears when a VM's host key is new or has changed. A new key is shown with
+  its fingerprint and whether it matches your `~/.ssh/known_hosts`; **Trust this key** stores
+  exactly that key. A changed key can be forgotten (only after a reinstall) and the new one
+  reviewed.
+
+The window draws its own title bar, since GNOME does not decorate Wayland windows: drag it to
+move, double-click to maximise, right-click for the window menu, use the minimise / maximise /
+close buttons, and resize from the edges.
 
 The app runs the same reachability monitor and snapshot poller as `vmdesk serve`, in the same
 process, on the same database as the CLI. Nothing else needs to be running.
+
+Memory: a release build uses about 70 MB on an Intel laptop. GPUI's renderer would otherwise load
+every installed graphics driver, including Mesa's GL stack and software renderer with `libLLVM`
+(about 55 MB more). So at start the app re-executes itself once with the graphics loaders limited
+to the Vulkan drivers of the GPUs actually present and no GL probe; programs it starts, such as the
+terminal, get the normal environment back. Set `VMDESK_ALL_GPU_DRIVERS=1` to keep every driver
+(needed only on a machine without a hardware Vulkan driver).
 
 ## Usage
 
@@ -219,13 +238,18 @@ Override with `--data-dir <path>` or `VMDESK_DATA_DIR`. The directory holds:
 
 - `vmdesk.db`: the SQLite database. Migrations run automatically on start.
 - `api-token`: the API bearer token, created on first `serve` with mode `0600`.
+- `ssh/`: what "Open terminal" writes: an SSH config per VM, plus an askpass helper for VMs
+  with a stored password.
+
+Passwords are not in the data directory; they live in the OS keychain.
 
 Log verbosity is controlled with `RUST_LOG` (default `info`).
 
 ## HTTP API
 
-The API is the interface for coding agents and scripts; the desktop app doesn't use it. It listens on loopback only; `serve` refuses any other address. Every route except
-`/api/v1/health` requires the token from `api-token`:
+The API is the interface for coding agents and scripts; the desktop app doesn't use it. It listens
+on loopback only (`serve` refuses any other address), and every route except `/api/v1/health`
+requires the token from `api-token`:
 
 ```sh
 TOKEN=$(cat ~/.local/share/vmdesk/api-token)
@@ -304,7 +328,11 @@ cargo fmt --all
 ```
 
 `cargo build` and `cargo test` without `--workspace` only cover `vmdesk-daemon`, the default
-member.
+member. The app's tests (`cargo test -p vmdesk-app`) drive a real window headlessly through GPUI's
+test platform on an in-memory database; nothing appears on screen.
+
+GPUI is pinned to a stable Zed release tag in the workspace `Cargo.toml`. Bump the tag
+deliberately: GPUI's API changes between releases.
 
 Migrations are embedded into the binary, so add a new numbered file under `migrations/` rather
 than editing an applied one; changing an applied migration makes existing databases fail with a
