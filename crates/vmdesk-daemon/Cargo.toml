@@ -24,7 +24,7 @@ vmdesk-collect = { workspace = true, features = ["remote"] }
 vmdesk-providers.workspace = true
 vmdesk-api.workspace = true
 actix-web.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util"] }
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

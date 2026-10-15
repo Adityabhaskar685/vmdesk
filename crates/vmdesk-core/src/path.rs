@@ -30,7 +30,7 @@ impl ConnectionPath {
         }
     }
 
-    /// `[Jump b1, Jump b2, ... , Direct].
+    /// `[Jump b1, Jump b2, ..., Direct]`.
     #[must_use]
     pub fn via(bastions: &[VmId], source: Origin) -> Self {
         let mut hops: Vec<Hop> = bastions.iter().map(|&via| Hop::Jump { via }).collect();

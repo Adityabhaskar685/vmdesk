@@ -2,6 +2,7 @@
 
 mod error;
 mod inventory;
+mod known_hosts;
 mod sync;
 
 use std::str::FromStr;

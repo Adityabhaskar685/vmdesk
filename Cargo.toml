@@ -12,10 +12,9 @@ members = [
     "crates/vmdesk-daemon",
     "crates/vmdesk-agent",
 ]
-default_members = ["crates/vmdesk-daemon"]
+default-members = ["crates/vmdesk-daemon"]
 
 [workspace.package]
-name = "vmdesk"
 version = "0.1.0"
 edition = "2024"
 authors = ["Aditya Bhaskar"]
@@ -91,11 +90,11 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 
 [profile.release]
-lto = "strip"
-codgen-units = 1
+lto = "fat"
+codegen-units = 1
 strip = "symbols"
 
-# small static agent binary: cargo build -p vmdesk-agent --profile agent --target x86_64_unknown-linux-musl
+# small static agent binary: cargo build -p vmdesk-agent --profile agent --target x86_64-unknown-linux-musl
 [profile.agent]
 inherits = "release"
 opt-level = "z"

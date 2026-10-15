@@ -6,6 +6,22 @@ pub enum Error {
     NotFound(String),
     #[error("connection failed: {0}")]
     Connect(String),
+    #[error("authentication failed: {0}")]
+    Auth(String),
+    #[error("host key for {vm} is not trusted yet: {key_type} {fingerprint}")]
+    UnknownHostKey {
+        vm: String,
+        key_type: String,
+        fingerprint: String,
+    },
+    #[error(
+        "host key for {vm} has changed (trusted {expected}, offered {offered}); connection blocked"
+    )]
+    HostKeyChanged {
+        vm: String,
+        expected: String,
+        offered: String,
+    },
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]

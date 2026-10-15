@@ -115,7 +115,7 @@ impl Db {
                 id,
                 name,
                 jump_via: pvm.jump_via,
-            })
+            });
         }
 
         for (ext, (id, name)) in &existing {
@@ -210,7 +210,7 @@ async fn insert(
         Ok(n) => n,
         Err(e) => return Ok(Err(e.to_string())),
     };
-    let username = match validate_username(&pvm.username.as_deref().unwrap_or(default_user)) {
+    let username = match validate_username(pvm.username.as_deref().unwrap_or(default_user)) {
         Ok(u) => u,
         Err(e) => return Ok(Err(e.to_string())),
     };

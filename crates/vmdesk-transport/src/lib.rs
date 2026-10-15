@@ -1,12 +1,18 @@
 //! SSH transport: builds a [`vmdesk_core::ConnectionPath`] hop by hop and runs
 //! the Russh handshake over the final byte stream.
 
+mod auth;
+mod connect;
+mod hostkey;
+mod session;
+
 use std::sync::Arc;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
-
+pub use connect::{TcpConnector, Transport};
+pub use hostkey::host_key;
 pub use russh;
+pub use session::SshSession;
 
 /// Per-hop connect timeout
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -25,22 +31,19 @@ pub fn client_config() -> Arc<russh::client::Config> {
     })
 }
 
-/// `SHA256:<hex>` fingerprint of a raw public key blob, stored in `known_hosts`.
-#[must_use]
-pub fn fingerprint(public_key_blob: &[u8]) -> String {
-    format!("SHA256:{}", hex::encode(Sha256::digest(public_key_blob)))
-}
-
 #[cfg(test)]
 mod tests {
+    use russh::keys::{Algorithm, PrivateKey};
+
     use super::*;
 
     #[test]
     fn config_and_fingerprint() {
         let cfg = client_config();
         assert_eq!(cfg.keepalive_interval, Some(KEEPALIVE));
-        let fp = fingerprint(b"key");
-        assert!(fp.starts_with("SHA256:"));
-        assert_eq!(fp.len(), 7 + 64);
+        let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let hk = host_key(key.public_key());
+        assert_eq!(hk.key_type, "ssh-ed25519");
+        assert!(hk.fingerprint.starts_with("SHA256:"));
     }
 }

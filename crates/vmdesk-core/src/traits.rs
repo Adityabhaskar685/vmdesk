@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 use vmdesk_proto::{Event, Snapshot};
 
-use crate::{CredentialRef, Endpoint, Hop, Lifecycle, ProviderId, Result};
+use crate::{CredentialRef, Endpoint, Hop, Lifecycle, ProviderId, Result, Vm, VmId};
 
 /// A VM record as reported by an inventory source.
 #[derive(Debug, Clone)]
@@ -34,14 +34,41 @@ pub trait Provider: Send + Sync {
 pub trait ByteStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> ByteStream for T {}
 
-/// Open one hop of [`ConnectionPath`].
+/// Opens TCP connections from an established session (SSH `direct-tcpip`).
+#[async_trait]
+pub trait Tunnel: Send + Sync {
+    async fn open_tcp(&self, host: &str, port: u16) -> Result<Box<dyn ByteStream>>;
+}
+
+/// Opens one hop of a [`ConnectionPath`](crate::ConnectionPath): a byte stream to the
+/// SSH port of `dest` (the jump host for [`Hop::Jump`], the target for [`Hop::Direct`]),
+/// through `upstream` when an earlier hop exists.
 #[async_trait]
 pub trait HopConnector: Send + Sync {
     async fn open(
         &self,
         hop: &Hop,
-        upstream: Option<&dyn RemoteExec>,
+        dest: &Vm,
+        upstream: Option<&dyn Tunnel>,
     ) -> Result<Box<dyn ByteStream>>;
+}
+
+/// A confirmed SSH host key for a VM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostKey {
+    /// Algorithm name, e.g. `ssh-ed25519`.
+    pub key_type: String,
+    /// `SHA256:<base64>`, as printed by `ssh-keygen -l`.
+    pub fingerprint: String,
+}
+
+/// Trusted host keys per VM (trust on first use). Implemented by the database.
+#[async_trait]
+pub trait HostKeyStore: Send + Sync {
+    async fn host_keys(&self, vm: VmId) -> Result<Vec<HostKey>>;
+    async fn trust_host_key(&self, vm: VmId, key: &HostKey) -> Result<()>;
+    /// Removes every stored key for `vm`, returning how many there were.
+    async fn forget_host_keys(&self, vm: VmId) -> Result<u64>;
 }
 
 #[derive(Debug, Clone, Default)]

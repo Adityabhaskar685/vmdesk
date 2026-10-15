@@ -1,9 +1,12 @@
 //! `vmdesk`: the laptop daemon and CLI.
 
+mod remote;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use actix_web::{App, HttpServer, web};
@@ -12,8 +15,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use vmdesk_api::AppState;
-use vmdesk_core::{Provider, Vm};
-use vmdesk_db::{Db, ListFilter, SyncReport};
+use vmdesk_core::{CredentialRef, Provider, Vm};
+use vmdesk_db::{Db, ListFilter, SyncReport, VmPatch};
 use vmdesk_providers::SshConfigProvider;
 
 #[derive(Parser)]
@@ -54,13 +57,58 @@ enum Cmd {
         /// Match name, address or tag.
         query: Option<String>,
     },
-    /// Pipe stdio to a VM's SSH port over its `ConnectionPath` (for ssh `ProxyCommand`).
-    Proxy { vm: String },
+    /// Run a command on a VM over its connection path; exits with the command's status.
+    ///
+    /// Arguments are joined with spaces and run by the remote shell, as with `ssh host cmd`.
+    Exec {
+        /// VM name, alias or id.
+        vm: String,
+        /// Log in as this user for this run only (jump hosts keep their own users).
+        #[arg(short = 'l', long)]
+        user: Option<String>,
+        /// Trust and store host keys of VMs (including jump hosts) not seen before.
+        #[arg(long)]
+        accept_new_host_keys: bool,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Change the user or key used to log in to a VM.
+    Edit {
+        /// VM name, alias or id.
+        vm: String,
+        /// Login user.
+        #[arg(short = 'l', long)]
+        user: Option<String>,
+        /// Private key file to authenticate with (tried before ssh-agent).
+        #[arg(long, value_name = "PATH", conflicts_with = "agent")]
+        key: Option<PathBuf>,
+        /// Authenticate with ssh-agent and the default keys in ~/.ssh instead of a key file.
+        #[arg(long)]
+        agent: bool,
+    },
+    /// Pipe stdio to a VM's SSH port over its connection path.
+    ///
+    /// For `ssh -o ProxyCommand='vmdesk proxy %n' <vm>`; jump-host keys are checked here,
+    /// the target's own key by ssh.
+    Proxy {
+        /// VM name, alias or id.
+        vm: String,
+        /// Trust and store host keys of jump hosts not seen before.
+        #[arg(long)]
+        accept_new_host_keys: bool,
+    },
+    /// Remove a VM's stored host keys, e.g. after it was reinstalled.
+    ForgetHostKey {
+        /// VM name, alias or id.
+        vm: String,
+    },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<ExitCode> {
+    // stderr: stdout carries `exec` output and the `proxy` byte stream.
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -77,14 +125,36 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     rt.block_on(async move {
         match cli.cmd {
-            Cmd::Serve { listen } => serve(&data_dir, listen).await,
+            Cmd::Serve { listen } => serve(&data_dir, listen).await?,
             Cmd::Import {
                 ssh_config,
                 dry_run,
-            } => import(&data_dir, ssh_config, dry_run).await,
-            Cmd::List { tag, query } => list(&data_dir, tag, query).await,
-            Cmd::Proxy { vm: _ } => anyhow::bail!("not implemented yet"),
+            } => import(&data_dir, ssh_config, dry_run).await?,
+            Cmd::List { tag, query } => list(&data_dir, tag, query).await?,
+            Cmd::Exec {
+                vm,
+                user,
+                accept_new_host_keys,
+                command,
+            } => {
+                let db = open_db(&data_dir).await?;
+                return remote::exec(&db, &vm, user, &command, accept_new_host_keys).await;
+            }
+            Cmd::Edit {
+                vm,
+                user,
+                key,
+                agent,
+            } => edit(&open_db(&data_dir).await?, &vm, user, key, agent).await?,
+            Cmd::Proxy {
+                vm,
+                accept_new_host_keys,
+            } => remote::proxy(&open_db(&data_dir).await?, &vm, accept_new_host_keys).await?,
+            Cmd::ForgetHostKey { vm } => {
+                remote::forget_host_key(&open_db(&data_dir).await?, &vm).await?;
+            }
         }
+        Ok(ExitCode::SUCCESS)
     })
 }
 
@@ -100,7 +170,7 @@ async fn serve(data_dir: &Path, listen: SocketAddr) -> anyhow::Result<()> {
         listen.ip().is_loopback(),
         "refusing to listen on a non-loopback address"
     );
-    let db = open_db(&data_dir).await?;
+    let db = open_db(data_dir).await?;
     let token_path = data_dir.join("api-token");
     let token: Arc<str> = load_or_create_token(&token_path)?.into();
     let state = web::Data::new(AppState { db, token });
@@ -191,6 +261,47 @@ fn print_report(r: &SyncReport) {
     if r.added.is_empty() && r.refreshed.is_empty() && r.skipped.is_empty() {
         println!("no hosts found");
     }
+}
+
+async fn edit(
+    db: &Db,
+    name: &str,
+    user: Option<String>,
+    key: Option<PathBuf>,
+    agent: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        user.is_some() || key.is_some() || agent,
+        "nothing to change: pass --user, --key or --agent"
+    );
+    let credential = match key {
+        Some(path) => {
+            let path = std::path::absolute(&path)
+                .with_context(|| format!("resolving {}", path.display()))?;
+            anyhow::ensure!(path.is_file(), "no key file at {}", path.display());
+            Some(CredentialRef::KeyFile(path))
+        }
+        None => agent.then_some(CredentialRef::SshAgent),
+    };
+    let (vm, _) = remote::resolve(db, name).await?;
+    let vm = db
+        .update_vm(
+            vm.id,
+            VmPatch {
+                username: user,
+                credential,
+                ..VmPatch::default()
+            },
+        )
+        .await?;
+    let auth = match &vm.credential {
+        CredentialRef::KeyFile(p) => format!("key {}", p.display()),
+        CredentialRef::SshAgent => "ssh-agent, then default keys".to_owned(),
+        CredentialRef::KeyChain(e) => format!("keychain {e}"),
+        CredentialRef::CloudProvider(p) => format!("cloud profile {p}"),
+    };
+    println!("{}: user {}, {auth}", vm.name, vm.username);
+    Ok(())
 }
 
 async fn list(data_dir: &Path, tag: Option<String>, q: Option<String>) -> anyhow::Result<()> {
