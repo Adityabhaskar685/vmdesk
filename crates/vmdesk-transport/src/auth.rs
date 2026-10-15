@@ -1,9 +1,10 @@
-//! User authentication: configured key file, then ssh-agent, then the default keys in `~/.ssh`.
+//! User authentication: the configured key file or keychain password, then ssh-agent,
+//! then the default keys in `~/.ssh`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use russh::client::Handle;
+use russh::client::{Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::AgentClient;
 use russh::keys::{PrivateKeyWithHashAlg, load_secret_key};
@@ -22,13 +23,21 @@ pub(crate) async fn authenticate(
     let user = vm.username.as_str();
     let mut tried = Vec::new();
 
-    if let CredentialRef::KeyFile(path) = &vm.credential {
-        let path = expand_home(path);
-        match key_file(handle, user, &path).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => tried.push(format!("{} rejected", path.display())),
-            Err(e) => tried.push(e),
+    match &vm.credential {
+        CredentialRef::KeyFile(path) => {
+            let path = expand_home(path);
+            match key_file(handle, user, &path).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => tried.push(format!("{} rejected", path.display())),
+                Err(e) => tried.push(e),
+            }
         }
+        CredentialRef::KeyChain(entry) => match password(handle, user, entry).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => tried.push("keychain password rejected".to_owned()),
+            Err(e) => tried.push(e),
+        },
+        CredentialRef::SshAgent | CredentialRef::CloudProvider(_) => {}
     }
 
     if use_agent {
@@ -54,9 +63,9 @@ pub(crate) async fn authenticate(
                 }
             }
         }
-        CredentialRef::KeyFile(_) => {}
-        CredentialRef::KeyChain(_) | CredentialRef::CloudProvider(_) => {
-            tried.push("keychain and cloud credentials are not supported yet".to_owned());
+        CredentialRef::KeyFile(_) | CredentialRef::KeyChain(_) => {}
+        CredentialRef::CloudProvider(_) => {
+            tried.push("cloud credentials are not supported yet".to_owned());
         }
     }
 
@@ -92,6 +101,52 @@ async fn key_file(
         .await
         .map(|r| r.success())
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Password auth, falling back to keyboard-interactive (where most servers ask for it).
+async fn password(
+    handle: &mut Handle<Client>,
+    user: &str,
+    entry: &str,
+) -> std::result::Result<bool, String> {
+    let secret = crate::keychain::get_password(entry)
+        .await
+        .map_err(|e| e.to_string())?;
+    let res = handle
+        .authenticate_password(user, secret.as_str())
+        .await
+        .map_err(|e| format!("password: {e}"))?;
+    if res.success() {
+        return Ok(true);
+    }
+    let mut step = handle
+        .authenticate_keyboard_interactive_start(user, None)
+        .await
+        .map_err(|e| format!("keyboard-interactive: {e}"))?;
+    // Answer hidden prompts with the password; give up after a few rounds.
+    for _ in 0..3 {
+        match step {
+            KeyboardInteractiveAuthResponse::Success => return Ok(true),
+            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                let answers = prompts
+                    .iter()
+                    .map(|p| {
+                        if p.echo {
+                            String::new()
+                        } else {
+                            secret.clone()
+                        }
+                    })
+                    .collect();
+                step = handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await
+                    .map_err(|e| format!("keyboard-interactive: {e}"))?;
+            }
+        }
+    }
+    Ok(false)
 }
 
 async fn agent(handle: &mut Handle<Client>, user: &str) -> std::result::Result<bool, String> {

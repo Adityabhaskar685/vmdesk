@@ -4,6 +4,7 @@
 mod auth;
 mod connect;
 mod hostkey;
+pub mod keychain;
 mod session;
 
 use std::sync::Arc;

@@ -72,7 +72,7 @@ if-watch    = { version = "3", features = ["tokio"]}
 regex   =  "1"
 sha2    =  "0.10"
 hex     =  "0.4"
-keyring =  "3"
+keyring =  { version = "3", features = ["async-secret-service", "tokio", "crypto-rust"] }
 dirs    =  "7"
 reqwest =  { version = "0.12", default-features = false, features = ["json", "rustls-tls"]}
 

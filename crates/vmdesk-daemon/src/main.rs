@@ -15,8 +15,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use vmdesk_api::AppState;
-use vmdesk_core::{CredentialRef, Provider, Vm};
-use vmdesk_db::{Db, ListFilter, SyncReport, VmPatch};
+use vmdesk_core::{CredentialRef, EndpointKind, Hop, Provider, Vm};
+use vmdesk_db::{Db, EndpointInput, ListFilter, NewVm, SyncReport, VmPatch};
 use vmdesk_providers::SshConfigProvider;
 
 #[derive(Parser)]
@@ -102,6 +102,33 @@ enum Cmd {
         /// VM name, alias or id.
         vm: String,
     },
+    /// Add a VM by hand.
+    Add {
+        /// Name to refer to it by.
+        name: String,
+        /// IP address or hostname.
+        address: String,
+        #[arg(short, long, default_value_t = 22)]
+        port: u16,
+        /// Login user (default: your local user).
+        #[arg(short = 'l', long)]
+        user: Option<String>,
+        /// Reach it through this jump host; repeat for a chain, nearest first.
+        #[arg(long, value_name = "VM")]
+        via: Vec<String>,
+        /// Private key file to authenticate with.
+        #[arg(long, value_name = "PATH")]
+        key: Option<PathBuf>,
+        #[arg(long)]
+        tag: Vec<String>,
+    },
+    /// Store a VM's login password in the OS keychain and log in with it.
+    ///
+    /// Reads the password from the terminal, or the first line of stdin when piped.
+    SetPassword {
+        /// VM name, alias or id.
+        vm: String,
+    },
 }
 
 fn main() -> anyhow::Result<ExitCode> {
@@ -153,6 +180,50 @@ fn main() -> anyhow::Result<ExitCode> {
             Cmd::ForgetHostKey { vm } => {
                 remote::forget_host_key(&open_db(&data_dir).await?, &vm).await?;
             }
+            Cmd::Add {
+                name,
+                address,
+                port,
+                user,
+                via,
+                key,
+                tag,
+            } => {
+                let db = open_db(&data_dir).await?;
+                let credential = key
+                    .as_deref()
+                    .map(key_credential)
+                    .transpose()?
+                    .unwrap_or_default();
+                let mut hops = Vec::new();
+                for v in &via {
+                    hops.push(Hop::Jump {
+                        via: remote::resolve(&db, v).await?.0.id,
+                    });
+                }
+                let paths = (!hops.is_empty()).then(|| {
+                    hops.push(Hop::Direct);
+                    vec![hops]
+                });
+                let vm = db
+                    .create_vm(NewVm {
+                        name,
+                        username: user.unwrap_or_else(vmdesk_api::local_username),
+                        credential,
+                        endpoints: vec![EndpointInput {
+                            address,
+                            port,
+                            kind: EndpointKind::default(),
+                            bind_interface: None,
+                        }],
+                        paths,
+                        tags: tag,
+                        favourite: false,
+                    })
+                    .await?;
+                println!("added {} ({})", vm.name, vm.id);
+            }
+            Cmd::SetPassword { vm } => set_password(&open_db(&data_dir).await?, &vm).await?,
         }
         Ok(ExitCode::SUCCESS)
     })
@@ -275,12 +346,7 @@ async fn edit(
         "nothing to change: pass --user, --key or --agent"
     );
     let credential = match key {
-        Some(path) => {
-            let path = std::path::absolute(&path)
-                .with_context(|| format!("resolving {}", path.display()))?;
-            anyhow::ensure!(path.is_file(), "no key file at {}", path.display());
-            Some(CredentialRef::KeyFile(path))
-        }
+        Some(path) => Some(key_credential(&path)?),
         None => agent.then_some(CredentialRef::SshAgent),
     };
     let (vm, _) = remote::resolve(db, name).await?;
@@ -301,6 +367,43 @@ async fn edit(
         CredentialRef::CloudProvider(p) => format!("cloud profile {p}"),
     };
     println!("{}: user {}, {auth}", vm.name, vm.username);
+    Ok(())
+}
+
+fn key_credential(path: &Path) -> anyhow::Result<CredentialRef> {
+    let path =
+        std::path::absolute(path).with_context(|| format!("resolving {}", path.display()))?;
+    anyhow::ensure!(path.is_file(), "no key file at {}", path.display());
+    Ok(CredentialRef::KeyFile(path))
+}
+
+async fn set_password(db: &Db, name: &str) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+
+    let (vm, _) = remote::resolve(db, name).await?;
+    let password = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(format!("Password for {}@{}: ", vm.username, vm.name))?
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_owned()
+    };
+    anyhow::ensure!(!password.is_empty(), "empty password");
+    // One keychain entry per VM, named by its id; the database keeps only that name.
+    let entry = vm.id.to_string();
+    vmdesk_transport::keychain::set_password(&entry, &password).await?;
+    db.update_vm(
+        vm.id,
+        VmPatch {
+            credential: Some(CredentialRef::KeyChain(entry)),
+            ..VmPatch::default()
+        },
+    )
+    .await?;
+    println!(
+        "stored password for {}@{} in the keychain",
+        vm.username, vm.name
+    );
     Ok(())
 }
 

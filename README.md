@@ -66,6 +66,12 @@ vmdesk exec regal-dev-07 uname -a          # exits with the remote command's sta
 vmdesk exec regal-dev-07 -- ls -la /tmp    # arguments are joined and run by the remote shell
 vmdesk exec -l root regal-dev-07 id        # another user for this run only
 
+# Add a VM by hand, here behind a jump host (repeat --via for a chain)
+vmdesk add lab-07 172.16.9.89 -l root --via bastion-01
+
+# Log in with a password kept in the OS keychain (prompts, or reads a line from stdin)
+vmdesk set-password lab-07
+
 # Change the stored login (re-importing never overwrites it)
 vmdesk edit regal-dev-07 --user root
 vmdesk edit regal-dev-07 --key ~/.ssh/id_lab   # or --agent to go back to ssh-agent
@@ -74,8 +80,10 @@ vmdesk edit regal-dev-07 --key ~/.ssh/id_lab   # or --agent to go back to ssh-ag
 ssh -o ProxyCommand='vmdesk proxy %n' regal-dev-07
 ```
 
-Authentication tries the VM's key file, then ssh-agent, then `~/.ssh/id_ed25519`, `id_ecdsa` and
-`id_rsa`. Passphrase-protected keys must be loaded in ssh-agent.
+Authentication tries the VM's key file or keychain password, then ssh-agent, then
+`~/.ssh/id_ed25519`, `id_ecdsa` and `id_rsa`. Passphrase-protected keys must be loaded in
+ssh-agent. Passwords live in the OS keychain (Secret Service, e.g. GNOME Keyring); the database
+only stores the entry name.
 
 Host keys are checked on every hop and stored in VMDesk's database (`ssh` checks the target
 itself under `proxy`):
