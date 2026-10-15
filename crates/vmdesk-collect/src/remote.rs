@@ -1,45 +1,119 @@
-//! SSH-only collector: one shell script per poll, sections split by markers.
+//! Laptop side: runs the probe over SSH, stores the snapshot, and turns the change since
+//! the previous one into timeline events. Also the background poller.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use vmdesk_core::{Collector, Error, RemoteExec, Result};
-use vmdesk_proto::{Event, SNAPSHOT_SCHEMA, Snapshot};
+use chrono::Utc;
+use futures::StreamExt;
+use vmdesk_core::{Collector, Error, HostKeyStore, RemoteExec, Result, SshState, Vm, VmId};
+use vmdesk_db::{Db, ListFilter};
+use vmdesk_proto::{Event, Snapshot};
+use vmdesk_transport::Transport;
 
-/// Marker that precedes each section of the probe script's output.
-pub const MARKER: &str = "@@vmdesk@@";
+use crate::{diff, parse, probe_command};
 
-/// Probe script run over a single exec channel. Missing tools just yield empty sections.
-pub const PROBE_SCRIPT: &str = r#"
-m='@@vmdesk@@'
-echo "$m hostname"; hostname 2>/dev/null
-echo "$m tmux"; tmux list-sessions -F '#{session_name}	#{session_windows}	#{session_attached}' 2>/dev/null
-echo "$m end"
-"#;
+/// Event source name for snapshots taken over SSH.
+pub const SOURCE: &str = "ssh";
+/// Background poll interval (spec section 9; 2 min while a VM is open in the app, M5).
+pub const POLL_INTERVAL: Duration = Duration::from_mins(15);
+/// At most this many VMs are collected at once.
+const MAX_IN_FLIGHT: usize = 8;
+const TICK: Duration = Duration::from_mins(1);
 
 pub struct SshCollector;
 
 #[async_trait]
 impl Collector for SshCollector {
     async fn snapshot(&self, session: &dyn RemoteExec) -> Result<Snapshot> {
-        let out = session.exec(PROBE_SCRIPT).await?;
+        let taken_at = Utc::now();
+        let out = session.exec(&probe_command()).await?;
         let text = String::from_utf8_lossy(&out.stdout);
-        let mut snap = Snapshot {
-            schema_version: SNAPSHOT_SCHEMA,
-            ..Snapshot::default()
-        };
-        for section in text.split(MARKER).skip(1) {
-            let (name, body) = section.split_once('\n').unwrap_or((section, ""));
-            match name.trim() {
-                "hostname" => body.trim().clone_into(&mut snap.system.hostname),
-                "tmux" => snap.tmux = crate::parse_tmux(body),
-                _ => {}
-            }
+        if !text.contains(crate::probe::MARKER) {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(Error::Other(format!(
+                "probe produced no output (exit {:?}): {}",
+                out.status,
+                err.lines().next().unwrap_or_default()
+            )));
         }
-        Ok(snap)
+        Ok(parse(&text, taken_at))
     }
 
     async fn events_since(&self, _session: &dyn RemoteExec, _cursor: u64) -> Result<Vec<Event>> {
         Err(Error::Other(
             "SSH collector derives events by diffing snapshots".into(),
         ))
+    }
+}
+
+/// Collects a snapshot of `vm` now, stores it with the events since the previous one,
+/// and returns it.
+#[allow(clippy::implicit_hasher)] // matches `Transport::session`
+pub async fn collect(
+    db: &Db,
+    transport: &Transport,
+    vm: &Vm,
+    inventory: &HashMap<VmId, Vm>,
+) -> Result<Snapshot> {
+    let session = transport.session(vm, inventory).await?;
+    let snapshot = SshCollector.snapshot(session.as_ref()).await?;
+    let previous = db.latest_snapshot(vm.id).await.map_err(|e| store_err(&e))?;
+    let events = previous.map(|p| diff(&p, &snapshot)).unwrap_or_default();
+    db.record_snapshot(vm.id, SOURCE, &snapshot, &events)
+        .await
+        .map_err(|e| store_err(&e))?;
+    tracing::debug!(vm = %vm.name, events = events.len(), "snapshot stored");
+    Ok(snapshot)
+}
+
+fn store_err(e: &vmdesk_db::Error) -> Error {
+    Error::Other(format!("storing snapshot: {e}"))
+}
+
+/// Collects from every VM whose last reachability check succeeded, every
+/// [`POLL_INTERVAL`]. VMs that are not reachable are left to the reachability monitor,
+/// so the poller never adds failing logins of its own.
+pub async fn poll_forever(db: &Db) -> vmdesk_db::Result<()> {
+    let mut tick = tokio::time::interval(TICK);
+    let mut last: HashMap<VmId, std::time::Instant> = HashMap::new();
+    loop {
+        tick.tick().await;
+        let vms = db.list_vms(&ListFilter::default()).await?;
+        let status = db.all_status().await?;
+        let inventory: HashMap<VmId, Vm> = vms.iter().map(|v| (v.id, v.clone())).collect();
+        let due: Vec<Vm> = vms
+            .iter()
+            .filter(|v| status.get(&v.id).is_some_and(|s| s.ssh == SshState::Ok))
+            .filter(|v| last.get(&v.id).is_none_or(|t| t.elapsed() >= POLL_INTERVAL))
+            .cloned()
+            .collect();
+        if due.is_empty() {
+            continue;
+        }
+        let transport = Transport::new(Arc::new(db.clone()) as Arc<dyn HostKeyStore>);
+        let results: Vec<(VmId, String, Result<Snapshot>)> = futures::stream::iter(due)
+            .map(|vm| {
+                let (transport, inventory) = (&transport, &inventory);
+                async move {
+                    (
+                        vm.id,
+                        vm.name.clone(),
+                        collect(db, transport, &vm, inventory).await,
+                    )
+                }
+            })
+            .buffer_unordered(MAX_IN_FLIGHT)
+            .collect()
+            .await;
+        transport.close_all().await;
+        for (id, name, res) in results {
+            last.insert(id, std::time::Instant::now());
+            if let Err(e) = res {
+                tracing::warn!(vm = %name, error = %e, "collection failed");
+            }
+        }
     }
 }

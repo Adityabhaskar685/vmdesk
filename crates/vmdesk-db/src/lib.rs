@@ -5,6 +5,7 @@ mod inventory;
 mod known_hosts;
 mod status;
 mod sync;
+mod timeline;
 
 use std::str::FromStr;
 
@@ -13,6 +14,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 pub use error::{Error, Result};
 pub use inventory::{EndpointInput, ListFilter, NewVm, VmPatch};
 pub use sync::SyncReport;
+pub use timeline::TimelineEntry;
 
 #[derive(Clone)]
 pub struct Db {

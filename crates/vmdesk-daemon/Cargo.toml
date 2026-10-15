@@ -17,6 +17,8 @@ azure     = ["vmdesk-providers/azure"]
 
 [dependencies]
 vmdesk-core.workspace = true
+vmdesk-proto.workspace = true
+serde_json.workspace = true
 vmdesk-db.workspace = true
 vmdesk-transport.workspace = true
 vmdesk-reach.workspace = true
@@ -32,7 +34,7 @@ tracing-subscriber.workspace = true
 dirs.workspace = true
 uuid = {workspace = true, features = ["v4"]}
 rpassword = "7"
-chrono.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 
 [lints]
 workspace = true

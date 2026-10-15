@@ -247,3 +247,32 @@ async fn status_before_and_after_a_check() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[actix_web::test]
+async fn snapshot_and_events_routes() {
+    let app = app!();
+    let req = auth(test::TestRequest::post().uri("/api/v1/vms"))
+        .set_json(json!({ "name": "closed", "username": "a", "endpoints": [{ "address": "127.0.0.1", "port": 1 }] }))
+        .to_request();
+    let vm: Value = test::call_and_read_body_json(&app, req).await;
+    let id = vm["id"].as_str().unwrap().to_owned();
+
+    let req =
+        auth(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/snapshot"))).to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let req =
+        auth(test::TestRequest::post().uri(&format!("/api/v1/vms/{id}/snapshot"))).to_request();
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = test::read_body_json(res).await;
+    assert_eq!(body["error"], "unreachable");
+
+    let req = auth(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/events?limit=5")))
+        .to_request();
+    let events: Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(events, json!([]));
+}

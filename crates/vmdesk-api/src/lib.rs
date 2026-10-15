@@ -3,6 +3,7 @@
 
 mod auth;
 mod error;
+mod snapshots;
 mod status;
 mod vms;
 
@@ -57,7 +58,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .app_data(web::QueryConfig::default().error_handler(|e, _| error::bad_request(e)))
             .route("/health", web::get().to(health))
             .configure(vms::routes)
-            .configure(status::routes),
+            .configure(status::routes)
+            .configure(snapshots::routes),
     );
 }
 

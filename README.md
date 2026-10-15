@@ -18,8 +18,8 @@ knowing IPs, users or jump hosts. The desktop app starts at M5.
 | M1 | Inventory: static + SSH config providers, SQLite, CRUD API | Done |
 | M2 | Transport: Russh over connection paths (direct + jump), `vmdesk exec`, `vmdesk proxy` | Done |
 | M3 | Reachability: route inspection, status signals, network-change monitor | Done |
-| M4 | State collectors, snapshots, timeline | Next |
-| M5 | GPUI desktop app (MVP) | Planned |
+| M4 | SSH collector, snapshots, timeline | Done |
+| M5 | GPUI desktop app (MVP) | Next |
 | M6–M9 | Agent, work sessions, embedded libghostty terminal, first cloud provider | Planned |
 
 ## Requirements
@@ -121,6 +121,28 @@ minutes, at most 32 at a time. In the background, VMs whose last login failed ar
 an open SSH port, so they are not hit with failing logins; `vmdesk status` retries the login.
 Status changes are recorded on each VM's timeline.
 
+### What is on a VM, and what happened there
+
+```sh
+vmdesk show lab-07              # collect now: system, tmux, containers, ports, repos, processes
+vmdesk show lab-07 --cached     # the last snapshot, without connecting
+vmdesk timeline lab-07 -n 100   # events, oldest first
+```
+
+`show` runs one shell script over a single SSH exec; nothing is installed on the VM. Missing
+tools (no Docker, no tmux, Docker permission denied) are reported, not fatal. Processes are
+limited to the login user's own work: kernel threads, idle shells, container internals and system
+services are left out, and command lines are redacted (`--password=`, `token=`, AWS keys).
+Repos are found from process and tmux working directories.
+
+Each snapshot is compared with the previous one, and the differences become timeline events:
+processes and containers starting and stopping, tmux sessions, git branch changes, commits and
+uncommitted changes, ports opening and closing, reboots, and gaps when the VM was not observed for
+45 minutes. A process only counts if it ran 30 s, is on a watchlist (`pytest`, `make`, `cargo`,
+`go`, `kubectl`, `helm`, ...) or runs in a tmux pane. `vmdesk serve` collects every 15 minutes
+from VMs whose last status check succeeded. Snapshots are kept compressed: all from the last
+48 hours, then hourly for 30 days, then daily.
+
 ### SSH config import
 
 Each concrete `Host` block becomes a VM. Wildcard patterns (`Host *.internal`) are skipped.
@@ -167,6 +189,9 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7878/api/v1/vms
 | `GET` | `/api/v1/status` | Last check result of every VM |
 | `GET` | `/api/v1/vms/{id}/status` | Last check result of one VM |
 | `POST` | `/api/v1/vms/{id}/check` | Check one VM now and return the result |
+| `GET` | `/api/v1/vms/{id}/snapshot` | Latest snapshot (404 if none yet) |
+| `POST` | `/api/v1/vms/{id}/snapshot` | Collect a snapshot now (502 if unreachable) |
+| `GET` | `/api/v1/vms/{id}/events` | Timeline, newest first. `?limit=` (default 100), `?before=` (RFC 3339) |
 
 Create a VM that is reached through another one:
 
@@ -209,7 +234,7 @@ crates/
   vmdesk-daemon/      The `vmdesk` binary: CLI and server
   vmdesk-transport/   SSH transport: path builder, session cache, host keys, auth
   vmdesk-reach/       Route lookup, reachability checks, network-change monitor
-  vmdesk-collect/     State collectors (M4, stub)
+  vmdesk-collect/     Probe script and parsers, snapshot diff to events, SSH collector, poller
   vmdesk-agent/       On-VM agent (M6, stub)
 migrations/           SQLx migrations, embedded at compile time
 ```

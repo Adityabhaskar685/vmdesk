@@ -4,29 +4,14 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use vmdesk_proto::TmuxSession;
 
+pub mod diff;
+pub mod probe;
 #[cfg(feature = "remote")]
 pub mod remote;
 
-/// `tmux list-session -F`  format the probes use.
-pub const TMUX_FORMAT: &str = "#{session_name}\t#{session_windows}\t#{session_attached}";
-
-/// Parses output produced with [`TMUX_FORMAT`].
-#[must_use]
-pub fn parse_tmux(output: &str) -> Vec<TmuxSession> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let mut f = line.split('\t');
-            Some(TmuxSession {
-                name: f.next()?.to_owned(),
-                windows: f.next()?.parse().ok()?,
-                attached: f.next()? != "0",
-            })
-        })
-        .collect()
-}
+pub use diff::diff;
+pub use probe::{PROBE_SCRIPT, parse, probe_command};
 
 static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(--?(?:password|passwd|token|secret)[= ]|(?:token|password)=|authorization:\s*\S+\s)(\S+)|AKIA[0-9A-Z]{16}")
@@ -47,13 +32,6 @@ pub fn redact(cmdline: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_tmux_session() {
-        let s = parse_tmux("vpn-0\t2\t1\nvpn-2\t2\t0");
-        assert_eq!(s.len(), 2);
-        assert!(s[0].attached && !s[1].attached);
-    }
 
     #[test]
     fn redacts_secrets() {

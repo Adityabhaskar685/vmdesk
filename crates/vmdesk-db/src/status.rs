@@ -9,6 +9,7 @@ use sqlx::sqlite::SqliteRow;
 use vmdesk_core::{VmId, VmStatus};
 
 use crate::inventory::parse_id;
+use crate::timeline::insert_event;
 use crate::{Db, Error, Result};
 
 /// Event source for observations made by the laptop (the agent will use its own).
@@ -52,17 +53,14 @@ impl Db {
                 "previous": { "route": prev.route, "ssh": prev.ssh, "agent": prev.agent },
                 "detail": status.detail,
             });
-            sqlx::query(
-                "INSERT INTO events (vm_id, source, seq, ts, kind, data_json) \
-                VALUES (?1, ?2, \
-                (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE vm_id = ?1 AND source = ?2), \
-                ?3, 'status_changed', ?4)",
+            insert_event(
+                &mut tx,
+                status.vm,
+                LAPTOP,
+                status.checked_at,
+                "status_changed",
+                &data,
             )
-            .bind(&vm)
-            .bind(LAPTOP)
-            .bind(status.checked_at.timestamp_millis())
-            .bind(data.to_string())
-            .execute(&mut *tx)
             .await?;
         }
         tx.commit().await?;

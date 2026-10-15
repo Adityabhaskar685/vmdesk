@@ -7,12 +7,15 @@ edition.workspace = true
 [features]
 default = ["remote"]
 # SSH collector (laptop side). The agent builds without it to stay free of russh.
-remote = ["dep:vmdesk-core", "dep:vmdesk-transport", "dep:async-trait"]
+remote = ["dep:vmdesk-core", "dep:vmdesk-transport", "dep:vmdesk-db", "dep:async-trait", "dep:tokio", "dep:futures"]
 
 [dependencies]
 vmdesk-proto.workspace = true
 vmdesk-core = { workspace = true, optional = true }
 vmdesk-transport = { workspace = true, optional = true }
+vmdesk-db = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["time"] }
+futures = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

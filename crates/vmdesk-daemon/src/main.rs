@@ -1,6 +1,7 @@
 //! `vmdesk`: the laptop daemon and CLI.
 
 mod remote;
+mod show;
 mod status;
 
 use std::collections::HashMap;
@@ -130,6 +131,22 @@ enum Cmd {
         /// VM name, alias or id.
         vm: String,
     },
+    /// Show what is on a VM now: system, tmux, containers, ports, repos and processes.
+    Show {
+        /// VM name, alias or id.
+        vm: String,
+        /// Print the last stored snapshot instead of collecting a new one.
+        #[arg(long)]
+        cached: bool,
+    },
+    /// Show what happened on a VM, oldest first.
+    Timeline {
+        /// VM name, alias or id.
+        vm: String,
+        /// Number of most recent events.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: u32,
+    },
     /// Check which VMs are reachable now: route, then SSH login.
     Status {
         /// VM names, aliases or ids (default: all).
@@ -234,6 +251,10 @@ fn main() -> anyhow::Result<ExitCode> {
                 println!("added {} ({})", vm.name, vm.id);
             }
             Cmd::SetPassword { vm } => set_password(&open_db(&data_dir).await?, &vm).await?,
+            Cmd::Show { vm, cached } => show::show(&open_db(&data_dir).await?, &vm, cached).await?,
+            Cmd::Timeline { vm, limit } => {
+                show::timeline(&open_db(&data_dir).await?, &vm, limit).await?;
+            }
             Cmd::Status { vms, watch } => {
                 status::status(&open_db(&data_dir).await?, &vms, watch).await?;
             }
@@ -271,6 +292,12 @@ async fn serve(data_dir: &Path, listen: SocketAddr) -> anyhow::Result<()> {
             .await;
         if let Err(e) = logged {
             tracing::error!(error = %e, "reachability monitor stopped");
+        }
+    });
+    let poll_db = db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = vmdesk_collect::remote::poll_forever(&poll_db).await {
+            tracing::error!(error = %e, "snapshot poller stopped");
         }
     });
     let state = web::Data::new(AppState { db, token });
@@ -497,7 +524,7 @@ fn row(
     ]
 }
 
-fn print_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) {
+pub(crate) fn print_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) {
     let mut widths = headers.map(|h| h.chars().count());
     for r in rows {
         for (w, cell) in widths.iter_mut().zip(r) {
