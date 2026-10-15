@@ -6,14 +6,19 @@ edition.workspace = true
 
 [dependencies]
 vmdesk-core.workspace = true
+vmdesk-db.workspace = true
 vmdesk-transport.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time", "sync", "process"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "process", "io-util", "macros"] }
 futures.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 netdev.workspace = true
 if-watch.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
 
 [lints]
 workspace = true

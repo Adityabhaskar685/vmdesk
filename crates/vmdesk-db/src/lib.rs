@@ -3,6 +3,7 @@
 mod error;
 mod inventory;
 mod known_hosts;
+mod status;
 mod sync;
 
 use std::str::FromStr;

@@ -5571,6 +5571,7 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "actix-ws",
+ "chrono",
  "futures",
  "serde",
  "serde_json",
@@ -5624,6 +5625,7 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "anyhow",
+ "chrono",
  "clap",
  "dirs",
  "rpassword",
@@ -5690,6 +5692,7 @@ name = "vmdesk-reach"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "if-watch",
  "netdev",
@@ -5697,6 +5700,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vmdesk-core",
+ "vmdesk-db",
  "vmdesk-transport",
 ]
 

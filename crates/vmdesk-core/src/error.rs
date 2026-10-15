@@ -6,6 +6,10 @@ pub enum Error {
     NotFound(String),
     #[error("connection failed: {0}")]
     Connect(String),
+    #[error("connection refused: {0}")]
+    Refused(String),
+    #[error("timed out: {0}")]
+    Timeout(String),
     #[error("authentication failed: {0}")]
     Auth(String),
     #[error("host key for {vm} is not trusted yet: {key_type} {fingerprint}")]

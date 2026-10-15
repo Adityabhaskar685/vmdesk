@@ -17,8 +17,8 @@ knowing IPs, users or jump hosts. The desktop app starts at M5.
 | M0 | Workspace, shared types, core traits | Done |
 | M1 | Inventory: static + SSH config providers, SQLite, CRUD API | Done |
 | M2 | Transport: Russh over connection paths (direct + jump), `vmdesk exec`, `vmdesk proxy` | Done |
-| M3 | Reachability: route inspection, status signals | Next |
-| M4 | State collectors, snapshots, timeline | Planned |
+| M3 | Reachability: route inspection, status signals, network-change monitor | Done |
+| M4 | State collectors, snapshots, timeline | Next |
 | M5 | GPUI desktop app (MVP) | Planned |
 | M6–M9 | Agent, work sessions, embedded libghostty terminal, first cloud provider | Planned |
 
@@ -95,6 +95,32 @@ itself under `proxy`):
 
 Logs go to stderr (`RUST_LOG`), so stdout carries only the command output or proxied stream.
 
+### Reachability
+
+```sh
+vmdesk status                       # check every VM now
+vmdesk status lab-07 bastion-01     # or just these
+vmdesk status --watch lab-07        # keep watching and print changes
+```
+
+```text
+NAME         STATE          SSH      DETAIL
+bastion-01   online (wlo1)  ok
+lab-07       online (wlo1)  ok
+old-box      ssh failing    timeout  timed out: old-box: 10.1.2.3:22: timed out
+```
+
+Each check looks up which laptop interface routes to the VM (or its first jump host), then logs
+in over the VM's path with a 3 s timeout per hop. The result is one of `ok`, `auth_failed`,
+`host_key`, `refused`, `timeout`, `no_route` or `error`, summarised as *online*, *ssh failing*,
+*no route*, *stopped* or *never checked*. `vmdesk list` shows the last result.
+
+`status --watch` and `vmdesk serve` keep checking: every VM when the laptop's addresses change
+(VPN up or down, Wi-Fi switch, after a 2 s settle), favourites every minute and the rest every five
+minutes, at most 32 at a time. In the background, VMs whose last login failed are only checked for
+an open SSH port, so they are not hit with failing logins; `vmdesk status` retries the login.
+Status changes are recorded on each VM's timeline.
+
 ### SSH config import
 
 Each concrete `Host` block becomes a VM. Wildcard patterns (`Host *.internal`) are skipped.
@@ -138,6 +164,9 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7878/api/v1/vms
 | `PATCH` | `/api/v1/vms/{id}` | Update a VM. Absent fields are left alone. |
 | `DELETE` | `/api/v1/vms/{id}` | Delete a VM |
 | `POST` | `/api/v1/import/ssh-config` | Import an SSH config. Body: `{"path": "..."}` (optional) |
+| `GET` | `/api/v1/status` | Last check result of every VM |
+| `GET` | `/api/v1/vms/{id}/status` | Last check result of one VM |
+| `POST` | `/api/v1/vms/{id}/check` | Check one VM now and return the result |
 
 Create a VM that is reached through another one:
 
@@ -179,7 +208,7 @@ crates/
   vmdesk-api/         Actix Web routes and token auth
   vmdesk-daemon/      The `vmdesk` binary: CLI and server
   vmdesk-transport/   SSH transport: path builder, session cache, host keys, auth
-  vmdesk-reach/       Reachability (M3, stub)
+  vmdesk-reach/       Route lookup, reachability checks, network-change monitor
   vmdesk-collect/     State collectors (M4, stub)
   vmdesk-agent/       On-VM agent (M6, stub)
 migrations/           SQLx migrations, embedded at compile time

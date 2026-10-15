@@ -1,6 +1,7 @@
 //! `vmdesk`: the laptop daemon and CLI.
 
 mod remote;
+mod status;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -129,6 +130,15 @@ enum Cmd {
         /// VM name, alias or id.
         vm: String,
     },
+    /// Check which VMs are reachable now: route, then SSH login.
+    Status {
+        /// VM names, aliases or ids (default: all).
+        vms: Vec<String>,
+        /// Keep running and print changes: rechecks on network changes, favourites
+        /// every minute and the rest every five.
+        #[arg(long)]
+        watch: bool,
+    },
 }
 
 fn main() -> anyhow::Result<ExitCode> {
@@ -224,6 +234,9 @@ fn main() -> anyhow::Result<ExitCode> {
                 println!("added {} ({})", vm.name, vm.id);
             }
             Cmd::SetPassword { vm } => set_password(&open_db(&data_dir).await?, &vm).await?,
+            Cmd::Status { vms, watch } => {
+                status::status(&open_db(&data_dir).await?, &vms, watch).await?;
+            }
         }
         Ok(ExitCode::SUCCESS)
     })
@@ -244,6 +257,22 @@ async fn serve(data_dir: &Path, listen: SocketAddr) -> anyhow::Result<()> {
     let db = open_db(data_dir).await?;
     let token_path = data_dir.join("api-token");
     let token: Arc<str> = load_or_create_token(&token_path)?.into();
+    let monitor = vmdesk_reach::Monitor::new(db.clone());
+    tokio::spawn(async move {
+        let logged = monitor
+            .run(|c| {
+                tracing::info!(
+                    vm = %c.vm.name,
+                    state = %status::state_label(&c.vm, Some(&c.status)),
+                    ssh = %c.status.ssh,
+                    "status changed"
+                );
+            })
+            .await;
+        if let Err(e) = logged {
+            tracing::error!(error = %e, "reachability monitor stopped");
+        }
+    });
     let state = web::Data::new(AppState { db, token });
     tracing::info!(%listen, token_file = %token_path.display(), "vmdesk serving");
     HttpServer::new(move || {
@@ -418,12 +447,23 @@ async fn list(data_dir: &Path, tag: Option<String>, q: Option<String>) -> anyhow
             provider: None,
         })
         .await?;
-    let rows: Vec<[String; 6]> = shown.iter().map(|vm| row(vm, &names)).collect();
-    print_table(&["NAME", "USER", "ADDRESS", "VIA", "SOURCE", "TAGS"], &rows);
+    let states = db.all_status().await?;
+    let rows: Vec<[String; 7]> = shown
+        .iter()
+        .map(|vm| row(vm, &names, states.get(&vm.id)))
+        .collect();
+    print_table(
+        &["NAME", "USER", "ADDRESS", "VIA", "STATE", "SOURCE", "TAGS"],
+        &rows,
+    );
     Ok(())
 }
 
-fn row(vm: &Vm, names: &HashMap<vmdesk_core::VmId, &str>) -> [String; 6] {
+fn row(
+    vm: &Vm,
+    names: &HashMap<vmdesk_core::VmId, &str>,
+    state: Option<&vmdesk_core::VmStatus>,
+) -> [String; 7] {
     let address = vm
         .endpoints
         .first()
@@ -451,6 +491,7 @@ fn row(vm: &Vm, names: &HashMap<vmdesk_core::VmId, &str>) -> [String; 6] {
         vm.username.clone(),
         address.unwrap_or_default(),
         via,
+        status::state_label(vm, state),
         source,
         vm.tags.join(","),
     ]

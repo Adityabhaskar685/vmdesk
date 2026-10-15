@@ -214,3 +214,36 @@ async fn malformed_input_is_a_json_400() {
     let body: Value = test::read_body_json(res).await;
     assert_eq!(body["error"], "unauthorized");
 }
+
+#[actix_web::test]
+async fn status_before_and_after_a_check() {
+    let app = app!();
+    let req = auth(test::TestRequest::post().uri("/api/v1/vms"))
+        .set_json(json!({ "name": "closed", "username": "a", "endpoints": [{ "address": "127.0.0.1", "port": 1 }] }))
+        .to_request();
+    let vm: Value = test::call_and_read_body_json(&app, req).await;
+    let id = vm["id"].as_str().unwrap().to_owned();
+
+    let req = auth(test::TestRequest::get().uri("/api/v1/status")).to_request();
+    let all: Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(all[0]["name"], "closed");
+    assert!(all[0]["ssh"].is_null(), "never checked");
+
+    let req = auth(test::TestRequest::post().uri(&format!("/api/v1/vms/{id}/check"))).to_request();
+    let checked: Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(checked["ssh"], "refused");
+    assert_eq!(checked["headline"], "ssh_failing");
+    assert!(checked["route"].is_string());
+
+    let req = auth(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/status"))).to_request();
+    let stored: Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(stored["ssh"], "refused");
+
+    let req =
+        auth(test::TestRequest::post().uri(&format!("/api/v1/vms/{}/check", uuid::Uuid::now_v7())))
+            .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}

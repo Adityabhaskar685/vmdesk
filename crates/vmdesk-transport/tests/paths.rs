@@ -356,7 +356,7 @@ async fn auth_and_path_failures() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, Error::Connect(_)), "{err}");
+    assert!(matches!(err, Error::Refused(_)), "{err}");
 
     for p in [key, other_key] {
         std::fs::remove_file(p).ok();

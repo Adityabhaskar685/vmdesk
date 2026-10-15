@@ -17,8 +17,26 @@ use crate::session::SshSession;
 use crate::{CONNECT_TIMEOUT, auth, client_config};
 
 /// Reaches a VM's SSH port over TCP: from the laptop, or through the previous hop's
-/// session with `direct-tcpip`. Endpoints are tried in order.
-pub struct TcpConnector;
+/// session with `direct-tcpip`. Endpoints are tried in order, each with `timeout`.
+pub struct TcpConnector {
+    pub timeout: Duration,
+}
+
+impl Default for TcpConnector {
+    fn default() -> Self {
+        Self {
+            timeout: CONNECT_TIMEOUT,
+        }
+    }
+}
+
+/// Why one endpoint failed, so a VM whose endpoints all refused or all timed out can
+/// say so.
+enum Failure {
+    Refused,
+    Timeout,
+    Other,
+}
 
 #[async_trait]
 impl HopConnector for TcpConnector {
@@ -32,27 +50,58 @@ impl HopConnector for TcpConnector {
         for ep in &dest.endpoints {
             let attempt = async {
                 if let Some(tunnel) = upstream {
-                    tunnel.open_tcp(&ep.address, ep.port).await
+                    tunnel
+                        .open_tcp(&ep.address, ep.port)
+                        .await
+                        .map_err(|e| (Failure::Other, e.to_string()))
                 } else {
-                    let tcp = TcpStream::connect((ep.address.as_str(), ep.port)).await?;
-                    tcp.set_nodelay(true)?;
+                    let tcp = TcpStream::connect((ep.address.as_str(), ep.port))
+                        .await
+                        .map_err(|e| {
+                            let kind = if e.kind() == std::io::ErrorKind::ConnectionRefused {
+                                Failure::Refused
+                            } else {
+                                Failure::Other
+                            };
+                            (kind, e.to_string())
+                        })?;
+                    tcp.set_nodelay(true)
+                        .map_err(|e| (Failure::Other, e.to_string()))?;
                     Ok(Box::new(tcp) as Box<dyn ByteStream>)
                 }
             };
-            match timeout(CONNECT_TIMEOUT, attempt).await {
+            match timeout(self.timeout, attempt).await {
                 Ok(Ok(stream)) => return Ok(stream),
-                Ok(Err(e)) => failures.push(format!("{}:{}: {e}", ep.address, ep.port)),
-                Err(_) => failures.push(format!("{}:{}: timed out", ep.address, ep.port)),
+                Ok(Err((kind, e))) => {
+                    failures.push((kind, format!("{}:{}: {e}", ep.address, ep.port)));
+                }
+                Err(_) => failures.push((
+                    Failure::Timeout,
+                    format!("{}:{}: timed out", ep.address, ep.port),
+                )),
             }
         }
         if failures.is_empty() {
-            failures.push("no endpoints".to_owned());
+            return Err(Error::Connect(format!("{}: no endpoints", dest.name)));
         }
-        Err(Error::Connect(format!(
+        let message = format!(
             "{}: {}",
             dest.name,
-            failures.join("; ")
-        )))
+            failures
+                .iter()
+                .map(|(_, m)| m.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        Err(
+            if failures.iter().all(|(k, _)| matches!(k, Failure::Refused)) {
+                Error::Refused(message)
+            } else if failures.iter().all(|(k, _)| matches!(k, Failure::Timeout)) {
+                Error::Timeout(message)
+            } else {
+                Error::Connect(message)
+            },
+        )
     }
 }
 
@@ -63,6 +112,7 @@ pub struct Transport {
     config: Arc<russh::client::Config>,
     accept_new_host_keys: bool,
     use_agent: bool,
+    timeout: Duration,
     sessions: Mutex<HashMap<VmId, Arc<SshSession>>>,
 }
 
@@ -71,10 +121,11 @@ impl Transport {
     pub fn new(store: Arc<dyn HostKeyStore>) -> Self {
         Self {
             store,
-            connector: Arc::new(TcpConnector),
+            connector: Arc::new(TcpConnector::default()),
             config: client_config(),
             accept_new_host_keys: false,
             use_agent: true,
+            timeout: CONNECT_TIMEOUT,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -90,6 +141,15 @@ impl Transport {
     #[must_use]
     pub fn use_agent(mut self, yes: bool) -> Self {
         self.use_agent = yes;
+        self
+    }
+
+    /// Per-hop timeout for TCP connects and SSH handshakes (default [`CONNECT_TIMEOUT`]).
+    /// Replaces the connector with a [`TcpConnector`] using it.
+    #[must_use]
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self.connector = Arc::new(TcpConnector { timeout });
         self
     }
 
@@ -246,7 +306,7 @@ impl Transport {
             rejected: Arc::clone(&rejected),
         };
         let connected = timeout(
-            CONNECT_TIMEOUT,
+            self.timeout,
             russh::client::connect_stream(Arc::clone(&self.config), stream, client),
         )
         .await;
@@ -259,10 +319,7 @@ impl Transport {
                 }));
             }
             Err(_) => {
-                return Err(Error::Connect(format!(
-                    "{}: SSH handshake timed out",
-                    dest.name
-                )));
+                return Err(Error::Timeout(format!("{}: SSH handshake", dest.name)));
             }
         };
         auth::authenticate(&mut handle, dest, self.use_agent).await?;

@@ -3,6 +3,7 @@
 
 mod auth;
 mod error;
+mod status;
 mod vms;
 
 use std::path::PathBuf;
@@ -55,7 +56,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .app_data(web::PathConfig::default().error_handler(|e, _| error::bad_request(e)))
             .app_data(web::QueryConfig::default().error_handler(|e, _| error::bad_request(e)))
             .route("/health", web::get().to(health))
-            .configure(vms::routes),
+            .configure(vms::routes)
+            .configure(status::routes),
     );
 }
 

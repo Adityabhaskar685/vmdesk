@@ -32,6 +32,7 @@ tracing-subscriber.workspace = true
 dirs.workspace = true
 uuid = {workspace = true, features = ["v4"]}
 rpassword = "7"
+chrono.workspace = true
 
 [lints]
 workspace = true
