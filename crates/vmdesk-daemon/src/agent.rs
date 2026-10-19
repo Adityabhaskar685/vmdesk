@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context;
 use chrono::Utc;
 use clap::Subcommand;
 use vmdesk_collect::agent::{self, AgentProbe};
@@ -12,12 +11,6 @@ use vmdesk_db::{AgentRecord, Db, ListFilter};
 
 use crate::status::short;
 use crate::{print_table, remote};
-
-/// Looked for next to the `vmdesk` executable when neither `--binary` nor
-/// `VMDESK_AGENT_BIN` is given.
-const BESIDE_EXE: &str = "vmdesk-agent-x86_64";
-const BUILD: &str =
-    "cargo build -p vmdesk-agent --profile agent --target x86_64-unknown-linux-musl";
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
@@ -52,8 +45,9 @@ pub struct Target {
 pub struct InstallArgs {
     #[command(flatten)]
     target: Target,
-    /// Static `x86_64` build of `vmdesk-agent` to upload.
-    #[arg(long, value_name = "PATH", env = "VMDESK_AGENT_BIN")]
+    /// Static `x86_64` build of `vmdesk-agent` to upload (default: `$VMDESK_AGENT_BIN`,
+    /// else `vmdesk-agent-x86_64` next to this executable).
+    #[arg(long, value_name = "PATH")]
     binary: Option<PathBuf>,
 }
 
@@ -70,26 +64,8 @@ pub async fn run(db: &Db, cmd: AgentCmd) -> anyhow::Result<()> {
     }
 }
 
-/// The agent build to upload: `--binary`, else `$VMDESK_AGENT_BIN` (both through clap),
-/// else [`BESIDE_EXE`] next to this executable.
-fn agent_binary(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    if let Some(path) = explicit {
-        return Ok(path);
-    }
-    let exe = std::env::current_exe().context("locating the vmdesk executable")?;
-    let beside = exe.with_file_name(BESIDE_EXE);
-    anyhow::ensure!(
-        beside.is_file(),
-        "no agent binary to upload: pass --binary <path>, set VMDESK_AGENT_BIN, or put \
-        {BESIDE_EXE} next to {}\nBuild one with `{BUILD}`",
-        exe.display()
-    );
-    Ok(beside)
-}
-
 async fn install(db: &Db, args: InstallArgs, verb: &str) -> anyhow::Result<()> {
-    let path = agent_binary(args.binary)?;
-    let binary = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let binary = agent_install::read_binary(args.binary)?;
     let (vm, inventory) = remote::resolve(db, &args.target.vm).await?;
     let t = remote::transport(db, args.target.accept_new_host_keys);
     let session = t.session(&vm, &inventory).await.map_err(remote::explain)?;

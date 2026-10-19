@@ -3,14 +3,15 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::{Entity, TestAppContext, VisualTestContext};
-use vmdesk_core::VmId;
+use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use vmdesk_core::{AgentState, CredentialRef, EndpointKind, VmId, VmStatus};
+use vmdesk_db::{AgentRecord, EndpointInput, NewVm};
 
 use super::*;
 
 /// Keeps the tokio runtime alive for the test's duration.
 struct Env {
-    _rt: tokio::runtime::Runtime,
+    rt: tokio::runtime::Runtime,
     backend: Backend,
 }
 
@@ -22,7 +23,86 @@ fn env() -> Env {
     let db = rt.block_on(vmdesk_db::Db::open_in_memory()).unwrap();
     let dir = std::env::temp_dir().join(format!("vmdesk-ui-{}", VmId::new()));
     let backend = Backend::new(rt.handle().clone(), db, dir);
-    Env { _rt: rt, backend }
+    Env { rt, backend }
+}
+
+/// VM `lab` on 127.0.0.1:1, which the last check found online and whose agent state is
+/// `agent`. With `version`, it also has an agent row, last synced 130 s ago. Collecting
+/// it fails fast (port 1 refuses), so opening it changes nothing stored.
+fn seed_vm(env: &Env, agent: AgentState, version: Option<&str>) {
+    let db = env.backend.db.clone();
+    env.rt.block_on(async {
+        let vm = db
+            .create_vm(NewVm {
+                name: "lab".into(),
+                username: "root".into(),
+                credential: CredentialRef::SshAgent,
+                endpoints: vec![EndpointInput {
+                    address: "127.0.0.1".into(),
+                    port: 1,
+                    kind: EndpointKind::default(),
+                    bind_interface: None,
+                }],
+                paths: None,
+                tags: vec![],
+                favourite: false,
+            })
+            .await
+            .unwrap();
+        db.save_status(&VmStatus {
+            vm: vm.id,
+            route: None,
+            ssh: vmdesk_core::SshState::Ok,
+            agent,
+            checked_at: Utc::now(),
+            detail: None,
+        })
+        .await
+        .unwrap();
+        if let Some(version) = version {
+            db.save_agent(
+                &AgentRecord {
+                    vm: vm.id,
+                    agent_id: uuid::Uuid::now_v7(),
+                    version: version.into(),
+                    proto: 1,
+                    installed_at: None,
+                    last_seq: 0,
+                    last_contact_at: Some(Utc::now() - chrono::Duration::seconds(130)),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        }
+    });
+}
+
+/// A window with `lab` open, once the collect that opening starts has given up.
+fn open_lab<'a>(
+    cx: &'a mut TestAppContext,
+    env: &Env,
+) -> (Entity<AppView>, &'a mut VisualTestContext) {
+    cx.executor().allow_parking();
+    let backend = env.backend.clone();
+    let (view, cx) = cx.add_window_view(|_, cx| AppView::new(backend, Some("lab".into()), cx));
+    view.update(cx, AppView::reload);
+    wait(cx, &view, "lab's detail", |v| {
+        v.selected.is_some() && v.detail.is_some() && v.busy.is_none()
+    });
+    (view, cx)
+}
+
+fn shown(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+    cx.run_until_parked();
+    cx.debug_bounds(selector).is_some()
+}
+
+fn click(cx: &mut VisualTestContext, selector: &'static str) {
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is not on screen"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
 }
 
 /// Runs GPUI until `done` holds, giving the tokio side time to finish in between.
@@ -218,4 +298,72 @@ fn edit_prefills_and_only_sends_what_changed(cx: &mut TestAppContext) {
     wait(cx, &view, "the new port", |v| {
         v.add.is_none() && v.vms.first().is_some_and(|vm| vm.endpoints[0].port == 2)
     });
+}
+
+#[gpui::test]
+fn a_vm_without_an_agent_offers_to_install_one(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    assert!(shown(cx, "agent: no agent"));
+    assert!(shown(cx, "lab: online"), "no agent, so no `+ agent`");
+    assert!(shown(cx, "headline: online"));
+    assert!(!shown(cx, "agent-remove"));
+
+    // Without a build to upload (or a VM that answers), the error is shown and the
+    // button comes back.
+    click(cx, "agent-install");
+    wait(cx, &view, "the install to fail", |v| {
+        v.busy.is_none()
+            && v.message
+                .as_ref()
+                .is_some_and(|(m, _)| m.starts_with("Install"))
+    });
+    let (message, err) = view.read_with(cx, |v, _| v.message.clone().unwrap());
+    assert!(
+        err && message.starts_with("Install agent failed: "),
+        "{message}"
+    );
+    assert!(shown(cx, "agent-install"));
+}
+
+#[gpui::test]
+fn a_collecting_agent_shows_online_plus_agent_and_asks_before_removal(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Ok, Some("0.1.0"));
+    let (_view, cx) = open_lab(cx, &env);
+
+    assert!(shown(cx, "agent: agent ok · 0.1.0 · synced 2m ago"));
+    assert!(shown(cx, "lab: online + agent"));
+    assert!(shown(cx, "headline: online + agent"));
+    assert!(!shown(cx, "agent-install") && !shown(cx, "agent-upgrade"));
+
+    click(cx, "agent-remove");
+    assert!(shown(cx, "agent-remove-panel"), "asks first");
+    assert!(shown(cx, "agent-remove-yes"));
+    assert!(!shown(cx, "agent-remove"), "one way to remove at a time");
+
+    click(cx, "agent-remove-no");
+    assert!(!shown(cx, "agent-remove-panel"));
+    assert!(shown(cx, "agent-remove"));
+    assert!(
+        shown(cx, "agent: agent ok · 0.1.0 · synced 2m ago"),
+        "nothing removed"
+    );
+}
+
+#[gpui::test]
+fn an_outdated_agent_offers_an_upgrade(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Outdated, Some("0.0.9"));
+    let (_view, cx) = open_lab(cx, &env);
+
+    assert!(shown(cx, "agent: agent outdated 0.0.9 · synced 2m ago"));
+    assert!(
+        shown(cx, "lab: online + agent"),
+        "an outdated agent still collects"
+    );
+    assert!(shown(cx, "agent-upgrade"));
+    assert!(!shown(cx, "agent-remove"));
 }

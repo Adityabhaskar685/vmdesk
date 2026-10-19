@@ -8,10 +8,11 @@ use gpui::{
     AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, SharedString, Window, div,
     prelude::*, px, rgb,
 };
-use vmdesk_core::{Headline, Hop, SshState, Vm, VmId, VmStatus, human_duration};
+use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus, human_duration};
 use vmdesk_db::TimelineEntry;
 use vmdesk_proto::Snapshot;
 
+use crate::agent_view::{AgentAction, AgentView};
 use crate::backend::{Backend, Detail, Inventory, KeyProblem};
 use crate::form::AddForm;
 
@@ -62,6 +63,8 @@ pub struct AppView {
     pub(crate) add: Option<AddForm>,
     /// VM waiting for the user to confirm its removal.
     confirm_remove: Option<VmId>,
+    /// VM whose agent is waiting for the user to confirm its removal.
+    confirm_agent_remove: Option<VmId>,
     /// A host key the user is deciding on, for the selected VM.
     key_prompt: Option<KeyProblem>,
 }
@@ -83,6 +86,7 @@ impl AppView {
             pending_select: open_vm,
             add: None,
             confirm_remove: None,
+            confirm_agent_remove: None,
             key_prompt: None,
         }
     }
@@ -177,6 +181,7 @@ impl AppView {
         self.detail = None;
         self.key_prompt = None;
         self.confirm_remove = None;
+        self.confirm_agent_remove = None;
         self.collected_at = None;
         self.message = None;
         self.load_detail(id, cx);
@@ -465,6 +470,39 @@ impl AppView {
         cx.notify();
     }
 
+    /// Installs, upgrades or removes `id`'s agent, then reloads its status and detail.
+    fn run_agent_action(&mut self, id: VmId, action: AgentAction, cx: &mut Context<Self>) {
+        self.confirm_agent_remove = None;
+        self.busy = Some(action.busy());
+        let job: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>>>> =
+            match action {
+                AgentAction::Install | AgentAction::Upgrade => {
+                    Box::pin(self.backend.install_agent(id))
+                }
+                AgentAction::Remove => Box::pin(self.backend.uninstall_agent(id)),
+            };
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let res = job.await;
+            let inv = backend.inventory().await;
+            this.update(cx, |v, cx| {
+                v.busy = None;
+                v.message = Some(match res {
+                    Ok(m) => (m, false),
+                    Err(e) => (format!("{} failed: {e:#}", action.label()), true),
+                });
+                v.apply_inventory(inv, cx);
+                if v.selected == Some(id) {
+                    v.load_detail(id, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Moves the selection one row up or down the filtered list.
     fn step_selection(&mut self, up: bool, cx: &mut Context<Self>) {
         let ids: Vec<VmId> = self.visible().iter().map(|v| v.id).collect();
@@ -545,6 +583,32 @@ fn remove_panel(vm: &Vm, cx: &mut Context<AppView>) -> gpui::Div {
         })))
 }
 
+/// Confirmation before removing a VM's agent.
+fn agent_remove_panel(vm: &Vm, cx: &mut Context<AppView>) -> gpui::Div {
+    let id = vm.id;
+    div()
+        .debug_selector(|| "agent-remove-panel".to_owned())
+        .mt_1()
+        .p_2()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(color::AMBER))
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(div().flex_1().text_sm().child(format!(
+            "Remove the agent from {}? It is stopped and deleted on the VM, and the VM is collected over SSH again. Its history on this laptop is kept.",
+            vm.name
+        )))
+        .child(button("agent-remove-yes", "Remove agent").on_click(cx.listener(move |this, _, _, cx| {
+            this.run_agent_action(id, AgentAction::Remove, cx);
+        })))
+        .child(button("agent-remove-no", "Cancel").on_click(cx.listener(|this, _, _, cx| {
+            this.confirm_agent_remove = None;
+            cx.notify();
+        })))
+}
+
 /// The host-key decision: trust a new key (with how to check it), or forget a changed one.
 fn key_panel(p: &KeyProblem, cx: &mut Context<AppView>) -> gpui::Div {
     let (border, lines, action): (u32, Vec<String>, &'static str) = match p {
@@ -611,6 +675,7 @@ pub(crate) fn label(text: impl Into<SharedString>) -> gpui::Div {
 pub(crate) fn button(id: &'static str, text: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .debug_selector(|| id.to_owned())
         .px_3()
         .py_1()
         .rounded_md()
@@ -673,11 +738,21 @@ fn table(headers: &[(f32, &str)], rows: Vec<Vec<String>>) -> gpui::Div {
     )
 }
 
+/// `online + agent` while the agent provides the VM's state, as `vmdesk list` prints it.
+fn headline_text(vm: &Vm, s: &VmStatus) -> String {
+    let h = s.headline(vm.lifecycle);
+    if h == Headline::Online && s.agent.collects() {
+        format!("{h} + agent")
+    } else {
+        h.to_string()
+    }
+}
+
 fn state_text(vm: &Vm, status: Option<&VmStatus>) -> String {
     match status {
         Some(s) => format!(
             "{} · ssh {} · route {} · checked {} ago",
-            s.headline(vm.lifecycle),
+            headline_text(vm, s),
             s.ssh,
             s.route.as_deref().unwrap_or("none"),
             human_duration((Utc::now() - s.checked_at).num_seconds())
@@ -757,11 +832,12 @@ impl AppView {
                     .children(vms.into_iter().map(|vm| {
                         let id = vm.id;
                         let h = self.headline(vm);
-                        let status = self.status.get(&vm.id);
-                        let sub = match (h, status.and_then(|s| s.route.as_deref())) {
-                            (Some(h), Some(r)) => format!("{h} · {r}"),
-                            (Some(h), None) => h.to_string(),
-                            (None, _) => "never checked".to_owned(),
+                        let sub = match self.status.get(&vm.id) {
+                            Some(s) => match &s.route {
+                                Some(r) => format!("{} · {r}", headline_text(vm, s)),
+                                None => headline_text(vm, s),
+                            },
+                            None => "never checked".to_owned(),
                         };
                         div()
                             .id(SharedString::from(vm.id.to_string()))
@@ -788,7 +864,10 @@ impl AppView {
                                             .text_ellipsis()
                                             .child(vm.name.clone()),
                                     )
-                                    .child(label(sub)),
+                                    .child(
+                                        label(sub.clone())
+                                            .debug_selector(|| format!("{}: {sub}", vm.name)),
+                                    ),
                             )
                     })),
             )
@@ -877,6 +956,50 @@ impl AppView {
         }
     }
 
+    /// The status dot and line, then `· agent ok · 0.1.0 · synced 2m ago [Remove agent]`
+    /// once the detail (with the agent record) has loaded. The agent's button is hidden
+    /// while an action runs or its removal waits for confirmation.
+    fn status_line(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
+        let id = vm.id;
+        let status = self.status.get(&id);
+        let agent = self.detail.as_ref().map(|d| {
+            AgentView::new(
+                d.agent.as_ref(),
+                status.map_or(AgentState::Unknown, |s| s.agent),
+            )
+        });
+        let idle = self.busy.is_none() && self.confirm_agent_remove != Some(id);
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .child(div().size(px(8.)).rounded_full().bg(rgb(headline_color(
+                status.map(|s| s.headline(vm.lifecycle)),
+            ))))
+            .child(label(state_text(vm, status)).debug_selector(|| {
+                let headline = status.map(|s| headline_text(vm, s));
+                format!("headline: {}", headline.unwrap_or_default())
+            }))
+            .when_some(agent, |d, agent| {
+                let action = agent.action();
+                let text = agent.text(Utc::now());
+                d.child(label("·"))
+                    .child(label(text.clone()).debug_selector(|| format!("agent: {text}")))
+                    .when(idle, |d| {
+                        d.child(button(action.id(), action.label()).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                if action == AgentAction::Remove {
+                                    this.confirm_agent_remove = Some(id);
+                                    cx.notify();
+                                } else {
+                                    this.run_agent_action(id, action, cx);
+                                }
+                            },
+                        )))
+                    })
+            })
+    }
+
     fn render_header(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
         let id = vm.id;
         let status = self.status.get(&id);
@@ -886,7 +1009,6 @@ impl AppView {
             .map(|e| format!("{}:{}", e.address, e.port))
             .unwrap_or_default();
         let path = self.path_text(vm);
-        let state_line = state_text(vm, status);
 
         div()
             .px_4()
@@ -938,16 +1060,10 @@ impl AppView {
             .when(self.confirm_remove == Some(id), |d| {
                 d.child(remove_panel(vm, cx))
             })
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().size(px(8.)).rounded_full().bg(rgb(headline_color(
-                        status.map(|s| s.headline(vm.lifecycle)),
-                    ))))
-                    .child(label(state_line)),
-            )
+            .child(self.status_line(vm, cx))
+            .when(self.confirm_agent_remove == Some(id), |d| {
+                d.child(agent_remove_panel(vm, cx))
+            })
             .when(
                 status.is_some_and(|s| s.ssh == SshState::HostKey) && self.key_prompt.is_none(),
                 |d| {
