@@ -36,6 +36,7 @@ fn hello(agent_id: Uuid) -> WireMsg {
         caps: vec!["tmux".into()],
         oldest_seq: 0,
         latest_seq: 0,
+        daemon: false,
     }
 }
 

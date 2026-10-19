@@ -224,6 +224,14 @@ impl EventKind {
 }
 
 /// Messages on the agent stream (one JSON per line).
+///
+/// `vmdesk-agent stream` writes `Hello` first, then answers control messages in the
+/// order they arrive: `Resume` sends every stored event after `since`, then keeps
+/// sending new ones as the daemon records them; `SnapshotRequest` sends a fresh
+/// `Snapshot` after any pending events, so a laptop that sends both and reads up to the
+/// `Snapshot` has caught up. The stream ends when stdin closes.
+///
+/// Event `seq`s start at 1, only grow, and are never reused, even after rotation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum WireMsg {
@@ -232,8 +240,14 @@ pub enum WireMsg {
         version: String,
         proto: u16,
         caps: Vec<String>,
+        /// Smallest stored seq; `latest_seq + 1` when the log is empty.
         oldest_seq: u64,
+        /// Largest seq ever assigned; 0 before the first event.
         latest_seq: u64,
+        /// Whether the collector daemon is running. When it is not, history is not
+        /// being recorded and the laptop falls back to the SSH collector.
+        #[serde(default)]
+        daemon: bool,
     },
     Resume {
         since: u64,
@@ -261,6 +275,7 @@ mod tests {
             caps: vec!["docker".into()],
             oldest_seq: 1,
             latest_seq: 9,
+            daemon: true,
         };
         let line = serde_json::to_string(&msg).unwrap();
         assert!(line.starts_with(r#"{"t":"hello""#));

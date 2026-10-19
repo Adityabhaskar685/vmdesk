@@ -22,12 +22,31 @@ pub enum SshState {
     NotChecked,
 }
 
-/// Agent handshake result. Until the agent exists (M6) this is always `Unknown`.
+/// Agent handshake result over the VM's SSH session (spec section 10).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
+    /// Not probed yet, or the VM was not reachable.
     #[default]
     Unknown,
+    /// No agent binary on the VM.
+    Absent,
+    /// The agent answered and its daemon is running.
+    Ok,
+    /// Older than this laptop's version; the daemon still runs.
+    Outdated,
+    /// Installed, but its daemon is not running: the SSH collector is used instead.
+    NotRunning,
+    /// The agent did not answer properly (bad output, protocol mismatch).
+    Error,
+}
+
+impl AgentState {
+    /// Whether the agent, not the SSH collector, provides this VM's state.
+    #[must_use]
+    pub fn collects(self) -> bool {
+        matches!(self, Self::Ok | Self::Outdated)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +126,14 @@ text_enum!(SshState {
     Error => "error",
     NotChecked => "not_checked",
 });
-text_enum!(AgentState { Unknown => "unknown" });
+text_enum!(AgentState {
+    Unknown => "unknown",
+    Absent => "absent",
+    Ok => "ok",
+    Outdated => "outdated",
+    NotRunning => "not_running",
+    Error => "error",
+});
 text_enum!(Headline {
     Stopped => "stopped",
     NoRoute => "no route",
