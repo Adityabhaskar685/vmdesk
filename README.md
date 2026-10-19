@@ -20,8 +20,9 @@ users or jump hosts. Nothing is installed on the VMs.
 | M3 | Reachability: route inspection, status signals, network-change monitor | Done |
 | M4 | SSH collector, snapshots, timeline | Done |
 | M5 | GPUI desktop app (MVP) | Done |
-| M6 | On-VM agent: offline history | Next |
-| M7–M9 | Work sessions, embedded libghostty terminal, first cloud provider | Planned |
+| M6 | On-VM agent: offline history | Done |
+| M7 | Work sessions, current-work summary, event search | Next |
+| M8–M9 | Embedded libghostty terminal, first cloud provider | Planned |
 
 ## Requirements
 
