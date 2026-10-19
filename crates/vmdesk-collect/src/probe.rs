@@ -71,7 +71,10 @@ sec repos
 if command -v git >/dev/null 2>&1; then
   { printf '%s\n' "$cwds" | cut -f2; printf '%s\n' "$panes" | awk -F '<[|]>' '{print $4}'; } \
     | grep -v -e '^/$' -e '^/proc' -e '^/sys' -e '^$' | sort -u | head -200 \
-    | while IFS= read -r d; do g "$d" rev-parse --show-toplevel 2>/dev/null; done \
+    | while IFS= read -r d; do
+        while [ -n "$d" ] && [ ! -d "$d/.git/objects" ] && [ ! -f "$d/.git" ]; do d=${d%/*}; done
+        [ -n "$d" ] && printf '%s\n' "$d"
+      done \
     | sort -u | head -50 \
     | while IFS= read -r r; do
         b=$(g "$r" symbolic-ref --short -q HEAD 2>/dev/null)
