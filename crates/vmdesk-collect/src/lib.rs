@@ -5,7 +5,13 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+#[cfg(feature = "remote")]
+pub mod agent;
+#[cfg(feature = "remote")]
+pub mod agent_install;
 pub mod diff;
+#[cfg(all(test, feature = "remote"))]
+mod fake_vm;
 pub mod probe;
 #[cfg(feature = "remote")]
 pub mod remote;
