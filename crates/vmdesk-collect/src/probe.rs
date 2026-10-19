@@ -19,6 +19,8 @@ pub const MARKER: &str = "@@vmdesk@@";
 pub const PROBE_SCRIPT: &str = r#"
 m='@@vmdesk@@'
 LC_ALL=C; export LC_ALL
+# Keeps git status off index.lock, so a git command of yours run meanwhile cannot fail.
+GIT_OPTIONAL_LOCKS=0; export GIT_OPTIONAL_LOCKS
 sec() { printf '%s %s\n' "$m" "$1"; }
 na() { echo "!unavailable $1"; }
 lim() { if command -v timeout >/dev/null 2>&1; then timeout 5 "$@"; else "$@"; fi; }
@@ -42,7 +44,9 @@ df -kP -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs 2>/dev/null | tai
 sec processes
 ps -eo pid=,ppid=,user:32=,etimes=,pcpu=,rss=,args= 2>/dev/null || na "ps failed"
 
-cwds=$(for d in /proc/[0-9]*; do c=$(readlink "$d/cwd" 2>/dev/null) && printf '%s\t%s\n' "${d#/proc/}" "$c"; done)
+# One ls for every process, not a readlink each: that cost a second of CPU at 400 processes.
+t=$(printf '\t')
+cwds=$(ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -n "s|^.* /proc/\([0-9]*\)/cwd -> |\1$t|p")
 sec cwds
 printf '%s\n' "$cwds"
 
@@ -92,13 +96,14 @@ pub fn probe_command() -> String {
 /// to be system services rather than something you started.
 const BOOT_GRACE_SECS: i64 = 300;
 const SHELLS: [&str; 6] = ["bash", "sh", "zsh", "fish", "dash", "ksh"];
-const NOISE: [&str; 6] = [
+const NOISE: [&str; 7] = [
     "sshd:",
     "(sd-pam)",
     "sleep",
     "containerd",
     "dockerd",
     "docker-proxy",
+    "vmdesk-agent",
 ];
 /// Binaries here, run by init from `/`, are system services even if restarted later.
 /// `/usr/bin` is left out: packaged daemons you deploy (e.g. open5gs) live there.
@@ -529,6 +534,8 @@ btime {BOOT}
  153660  153604 root           0  0.0  3712 /bin/sh -c m='{MARKER}'
  153673  153660 root           0  0.0  2304 ps -eo pid=
  160000       1 alice        900  0.0  2304 vim notes.md
+ 170000       1 root       90000  0.1  6000 /root/.local/share/vmdesk/agent/vmdesk-agent daemon
+ 170100  153604 root           0  0.0  5000 /root/.local/share/vmdesk/agent/vmdesk-agent stream
  145470       1 root       12000  0.0  9000 /sbin/multipathd -d -s
  114372       1 root       85000  0.0  3000 SCREEN -S shetty
  114373  114372 root       85000  0.0  4000 /bin/bash
@@ -591,7 +598,8 @@ LISTEN 0      4096   127.0.0.53%lo:53    0.0.0.0:*
                 "claude --resume",
             ],
             "kept: session work (redacted), a packaged daemon started later, a screen \
-             session; dropped: boot services, a restarted system daemon, container internals"
+             session; dropped: boot services, a restarted system daemon, container internals, \
+             the agent itself"
         );
         let pytest = &snap.processes[1];
         assert_eq!(pytest.cwd.as_deref(), Some("/root/regal"));
