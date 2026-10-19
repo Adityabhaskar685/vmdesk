@@ -738,21 +738,11 @@ fn table(headers: &[(f32, &str)], rows: Vec<Vec<String>>) -> gpui::Div {
     )
 }
 
-/// `online + agent` while the agent provides the VM's state, as `vmdesk list` prints it.
-fn headline_text(vm: &Vm, s: &VmStatus) -> String {
-    let h = s.headline(vm.lifecycle);
-    if h == Headline::Online && s.agent.collects() {
-        format!("{h} + agent")
-    } else {
-        h.to_string()
-    }
-}
-
 fn state_text(vm: &Vm, status: Option<&VmStatus>) -> String {
     match status {
         Some(s) => format!(
             "{} · ssh {} · route {} · checked {} ago",
-            headline_text(vm, s),
+            s.label(vm.lifecycle),
             s.ssh,
             s.route.as_deref().unwrap_or("none"),
             human_duration((Utc::now() - s.checked_at).num_seconds())
@@ -834,8 +824,8 @@ impl AppView {
                         let h = self.headline(vm);
                         let sub = match self.status.get(&vm.id) {
                             Some(s) => match &s.route {
-                                Some(r) => format!("{} · {r}", headline_text(vm, s)),
-                                None => headline_text(vm, s),
+                                Some(r) => format!("{} · {r}", s.label(vm.lifecycle)),
+                                None => s.label(vm.lifecycle),
                             },
                             None => "never checked".to_owned(),
                         };
@@ -977,7 +967,7 @@ impl AppView {
                 status.map(|s| s.headline(vm.lifecycle)),
             ))))
             .child(label(state_text(vm, status)).debug_selector(|| {
-                let headline = status.map(|s| headline_text(vm, s));
+                let headline = status.map(|s| s.label(vm.lifecycle));
                 format!("headline: {}", headline.unwrap_or_default())
             }))
             .when_some(agent, |d, agent| {

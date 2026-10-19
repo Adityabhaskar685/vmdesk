@@ -1,7 +1,7 @@
 //! `vmdesk status`: check reachability now, or keep watching for changes.
 
 use chrono::Local;
-use vmdesk_core::{Headline, Vm, VmStatus};
+use vmdesk_core::{Vm, VmStatus};
 use vmdesk_db::Db;
 use vmdesk_reach::{Checked, Monitor};
 
@@ -15,15 +15,10 @@ pub fn state_label(vm: &Vm, status: Option<&VmStatus>) -> String {
     let Some(s) = status else {
         return "never checked".to_owned();
     };
-    let headline = s.headline(vm.lifecycle);
-    let agent = if headline == Headline::Online && s.agent.collects() {
-        " + agent"
-    } else {
-        ""
-    };
+    let label = s.label(vm.lifecycle);
     match &s.route {
-        Some(dev) => format!("{headline}{agent} ({dev})"),
-        None => format!("{headline}{agent}"),
+        Some(dev) => format!("{label} ({dev})"),
+        None => label,
     }
 }
 

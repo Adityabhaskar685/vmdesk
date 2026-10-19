@@ -84,6 +84,18 @@ impl VmStatus {
         }
     }
 
+    /// The headline as shown to people: `online + agent` while the agent provides the
+    /// VM's state.
+    #[must_use]
+    pub fn label(&self, lifecycle: Lifecycle) -> String {
+        let headline = self.headline(lifecycle);
+        if headline == Headline::Online && self.agent.collects() {
+            format!("{headline} + agent")
+        } else {
+            headline.to_string()
+        }
+    }
+
     /// Whether `self` differs from `other` in a way worth an event.
     #[must_use]
     pub fn changed_from(&self, other: &Self) -> bool {
