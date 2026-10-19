@@ -19,6 +19,8 @@ pub const MARKER: &str = "@@vmdesk@@";
 pub const PROBE_SCRIPT: &str = r#"
 m='@@vmdesk@@'
 LC_ALL=C; export LC_ALL
+# Keeps git status off index.lock, so a git command of yours run meanwhile cannot fail.
+GIT_OPTIONAL_LOCKS=0; export GIT_OPTIONAL_LOCKS
 sec() { printf '%s %s\n' "$m" "$1"; }
 na() { echo "!unavailable $1"; }
 lim() { if command -v timeout >/dev/null 2>&1; then timeout 5 "$@"; else "$@"; fi; }
