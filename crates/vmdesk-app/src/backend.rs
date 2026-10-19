@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use tokio::runtime::Handle;
+use vmdesk_collect::agent_install;
 use vmdesk_core::{
     CredentialRef, EndpointKind, Error as CoreError, Hop, HostKey, HostKeyStore, Vm, VmId, VmStatus,
 };
-use vmdesk_db::{Db, EndpointInput, ListFilter, NewVm, TimelineEntry, VmPatch};
+use vmdesk_db::{AgentRecord, Db, EndpointInput, ListFilter, NewVm, TimelineEntry, VmPatch};
 use vmdesk_proto::Snapshot;
 use vmdesk_reach::Monitor;
-use vmdesk_transport::Transport;
+use vmdesk_transport::{SshSession, Transport};
 
 /// Events shown in the timeline tab.
 const TIMELINE_LIMIT: u32 = 300;
@@ -78,6 +79,8 @@ pub enum KeyProblem {
 pub struct Detail {
     pub snapshot: Option<Snapshot>,
     pub timeline: Vec<TimelineEntry>,
+    /// The VM's agent, once one has answered a sync. Its state is in the VM's status.
+    pub agent: Option<AgentRecord>,
 }
 
 impl Backend {
@@ -127,6 +130,7 @@ impl Backend {
             Ok(Detail {
                 snapshot: db.latest_snapshot(vm).await?,
                 timeline: db.timeline(vm, TIMELINE_LIMIT, None).await?,
+                agent: db.agent(vm).await?,
             })
         })
     }
@@ -144,18 +148,47 @@ impl Backend {
     pub fn collect(&self, vm: VmId) -> impl Future<Output = anyhow::Result<()>> + use<> {
         let db = self.db.clone();
         self.run(async move {
-            let all = db.list_vms(&ListFilter::default()).await?;
-            let target = all
-                .iter()
-                .find(|v| v.id == vm)
-                .cloned()
-                .context("VM no longer exists")?;
-            let inventory = all.into_iter().map(|v| (v.id, v)).collect();
-            let transport = Transport::new(Arc::new(db.clone()) as Arc<dyn HostKeyStore>);
-            let res = vmdesk_collect::remote::collect(&db, &transport, &target, &inventory).await;
+            let (target, transport, session) = connect(&db, vm).await?;
+            let res = vmdesk_collect::remote::collect_from(&db, session.as_ref(), &target).await;
             transport.close_all().await;
             res?;
             Ok(())
+        })
+    }
+
+    /// Uploads the agent build ([`agent_install::read_binary`]) to `vm`, starts it and
+    /// syncs once. Installs and upgrades alike.
+    pub fn install_agent(&self, vm: VmId) -> impl Future<Output = anyhow::Result<String>> + use<> {
+        let db = self.db.clone();
+        self.run(async move {
+            let binary = agent_install::read_binary(None)?;
+            let (target, transport, session) = connect(&db, vm).await?;
+            let done = agent_install::install(&db, session.as_ref(), vm, &binary).await;
+            transport.close_all().await;
+            let done = done?;
+            let version = db.agent(vm).await?.map(|a| a.version).unwrap_or_default();
+            Ok(format!(
+                "agent {version} running on {} under {}",
+                target.name, done.supervisor
+            ))
+        })
+    }
+
+    /// Stops and removes `vm`'s agent. Its history on this laptop is kept.
+    pub fn uninstall_agent(
+        &self,
+        vm: VmId,
+    ) -> impl Future<Output = anyhow::Result<String>> + use<> {
+        let db = self.db.clone();
+        self.run(async move {
+            let (target, transport, session) = connect(&db, vm).await?;
+            let done = agent_install::uninstall(&db, session.as_ref(), vm).await;
+            transport.close_all().await;
+            done?;
+            Ok(format!(
+                "removed the agent from {}; its history is kept",
+                target.name
+            ))
         })
     }
 
@@ -372,6 +405,27 @@ impl Backend {
                 .context("VM no longer exists")?;
             crate::terminal::open(target, &all, &dir)
         })
+    }
+}
+
+/// A session to `vm` over its path, trusting no new host keys. Close the transport when
+/// done.
+async fn connect(db: &Db, vm: VmId) -> anyhow::Result<(Vm, Transport, Arc<SshSession>)> {
+    let all = db.list_vms(&ListFilter::default()).await?;
+    let target = all
+        .iter()
+        .find(|v| v.id == vm)
+        .cloned()
+        .context("VM no longer exists")?;
+    let inventory = all.into_iter().map(|v| (v.id, v)).collect();
+    let transport = Transport::new(Arc::new(db.clone()) as Arc<dyn HostKeyStore>);
+    match transport.session(&target, &inventory).await {
+        Ok(session) => Ok((target, transport, session)),
+        Err(e) => {
+            // Jump hosts reached on the way stay open otherwise.
+            transport.close_all().await;
+            Err(e.into())
+        }
     }
 }
 

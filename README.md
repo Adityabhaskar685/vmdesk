@@ -88,6 +88,16 @@ Working with a VM:
   - For a VM with a stored password, `ssh` gets it from the keychain through `vmdesk askpass` (an
     `SSH_ASKPASS` helper), so you are not asked. Only the first password prompt is answered; other
     prompts, such as accepting a new host key or a retry after a wrong password, are shown to you.
+- The [on-VM agent](#on-vm-agent) has its own line next to the status: `agent ok · 0.1.0 · synced 2m
+  ago`, `agent outdated 0.0.9 · synced 2m ago`, `agent not running (collecting over SSH)`,
+  `agent error: …`, or `no agent`. While the agent collects, the list and the header say
+  `online + agent`, as `vmdesk list` does. The line has one button:
+  - **Install agent** when the VM has none, or the binary is gone from the VM. It runs the same
+    steps as `vmdesk agent install`, with the build from `VMDESK_AGENT_BIN`, else
+    `vmdesk-agent-x86_64` next to `vmdesk-app`.
+  - **Upgrade agent** when the agent is outdated: the same steps with this build.
+  - **Remove agent** otherwise. It asks first, then stops and deletes the agent on the VM. The
+    VM's history on this laptop is kept.
 - **Review host key…** appears when a VM's host key is new or has changed. A new key is shown with
   its fingerprint and whether it matches your `~/.ssh/known_hosts`; **Trust this key** stores
   exactly that key. A changed key can be forgotten (only after a reinstall) and the new one

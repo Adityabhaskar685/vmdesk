@@ -1,6 +1,7 @@
 //! `vmdesk-app`: the desktop app. One process: the window, the reachability monitor and
 //! the snapshot poller share the same database as the `vmdesk` CLI.
 
+mod agent_view;
 mod backend;
 mod chrome;
 mod field;
