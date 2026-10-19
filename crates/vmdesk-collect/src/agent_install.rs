@@ -1,6 +1,8 @@
 //! Installing, upgrading and removing a VM's agent from the laptop (spec section 10).
 //! Every step converges, so a command interrupted at any point is fixed by rerunning it.
 
+use std::path::PathBuf;
+
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,6 +13,33 @@ use crate::agent::{self, AgentProbe, db_err, in_dir, run};
 
 /// The only architecture an agent is built for so far.
 pub const ARCH: &str = "x86_64";
+
+/// Looked for next to the running executable (`vmdesk` or `vmdesk-app`) when no build
+/// is named.
+const BESIDE_EXE: &str = "vmdesk-agent-x86_64";
+const BUILD: &str =
+    "cargo build -p vmdesk-agent --profile agent --target x86_64-unknown-linux-musl";
+
+/// Reads the agent build to upload: `explicit`, else `$VMDESK_AGENT_BIN`, else
+/// [`BESIDE_EXE`] next to the running executable.
+pub fn read_binary(explicit: Option<PathBuf>) -> Result<Vec<u8>> {
+    let named = explicit.or_else(|| std::env::var_os("VMDESK_AGENT_BIN").map(PathBuf::from));
+    let path = if let Some(path) = named {
+        path
+    } else {
+        let exe = std::env::current_exe()?;
+        let beside = exe.with_file_name(BESIDE_EXE);
+        if !beside.is_file() {
+            return Err(Error::Other(format!(
+                "no agent binary to upload: set VMDESK_AGENT_BIN or put {BESIDE_EXE} next to \
+                {}\nBuild one with `{BUILD}`",
+                exe.display()
+            )));
+        }
+        beside
+    };
+    std::fs::read(&path).map_err(|e| Error::Other(format!("reading {}: {e}", path.display())))
+}
 
 /// What an install did.
 #[derive(Debug)]
