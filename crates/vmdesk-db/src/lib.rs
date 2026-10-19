@@ -1,5 +1,6 @@
 //! `SQLite` persistance: connection pool, migrations, inventory and provider sync.
 
+mod agents;
 mod error;
 mod inventory;
 mod known_hosts;
@@ -11,6 +12,7 @@ use std::str::FromStr;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+pub use agents::{AgentRecord, agent_source};
 pub use error::{Error, Result};
 pub use inventory::{EndpointInput, ListFilter, NewVm, VmPatch};
 pub use sync::SyncReport;
@@ -57,6 +59,30 @@ impl Db {
             .fetch_one(&self.pool)
             .await?)
     }
+}
+
+/// An in-memory database holding one VM.
+#[cfg(test)]
+pub(crate) async fn db_with_vm() -> (Db, vmdesk_core::VmId) {
+    let db = Db::open_in_memory().await.unwrap();
+    let vm = db
+        .create_vm(NewVm {
+            name: "box".into(),
+            username: "u".into(),
+            credential: vmdesk_core::CredentialRef::SshAgent,
+            endpoints: vec![EndpointInput {
+                address: "10.0.0.1".into(),
+                port: 22,
+                kind: vmdesk_core::EndpointKind::Private,
+                bind_interface: None,
+            }],
+            paths: None,
+            tags: vec![],
+            favourite: false,
+        })
+        .await
+        .unwrap();
+    (db, vm.id)
 }
 
 #[cfg(test)]

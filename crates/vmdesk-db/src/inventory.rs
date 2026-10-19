@@ -508,7 +508,7 @@ fn parse_enum<T: FromStr<Err = vmdesk_core::Error>>(s: &str) -> Result<T> {
         .map_err(|e: vmdesk_core::Error| Error::Corrupt(e.to_string()))
 }
 
-fn from_ms(ms: i64) -> Result<DateTime<Utc>> {
+pub(crate) fn from_ms(ms: i64) -> Result<DateTime<Utc>> {
     DateTime::from_timestamp_millis(ms).ok_or_else(|| Error::Corrupt(format!("bad time {ms}")))
 }
 

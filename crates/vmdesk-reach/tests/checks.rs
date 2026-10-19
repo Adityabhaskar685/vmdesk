@@ -262,4 +262,58 @@ async fn monitor_stores_results_and_reports_changes() {
         db.get_status(created.id).await.unwrap().unwrap().ssh,
         SshState::NoRoute
     );
+
+    // The agent state found by a sync survives later checks and is no change.
+    db.set_agent_state(created.id, AgentState::Ok)
+        .await
+        .unwrap();
+    let third = monitor.check_now(None).await.unwrap();
+    assert_eq!(third[0].status.agent, AgentState::Ok);
+    assert!(third[0].previous.is_none());
+    assert_eq!(
+        db.get_status(created.id).await.unwrap().unwrap().agent,
+        AgentState::Ok
+    );
+}
+
+#[tokio::test]
+async fn check_carries_the_previous_agent_state() {
+    let routes = FakeRoutes::via(Some("wlan0"));
+    let mut v = vm("box", "127.0.0.1", dead_port().await, vec![]);
+    let inv = HashMap::from([(v.id, v.clone())]);
+    let previous = VmStatus {
+        vm: v.id,
+        route: Some("wlan0".into()),
+        ssh: SshState::Ok,
+        agent: AgentState::NotRunning,
+        checked_at: Utc::now(),
+        detail: None,
+    };
+    let s = check(
+        &v,
+        &inv,
+        &transport(),
+        routes.as_ref(),
+        Probe::Login,
+        Some(&previous),
+    )
+    .await;
+    assert_eq!(
+        (s.ssh, s.agent),
+        (SshState::Refused, AgentState::NotRunning)
+    );
+
+    v.lifecycle = Lifecycle::Stopped;
+    let s = check(
+        &v,
+        &inv,
+        &transport(),
+        routes.as_ref(),
+        Probe::Login,
+        Some(&previous),
+    )
+    .await;
+    assert_eq!(s.agent, AgentState::NotRunning);
+    let s = check(&v, &inv, &transport(), routes.as_ref(), Probe::Login, None).await;
+    assert_eq!(s.agent, AgentState::Unknown);
 }

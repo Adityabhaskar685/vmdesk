@@ -49,17 +49,28 @@ impl TimelineEntry {
             "git_dirty_changed" => format!("{}: {} -> {} modified", s("repo"), d["from"], d["to"]),
             "listener_opened" => format!("{}:{} {}", s("addr"), d["port"], s("process")),
             "listener_closed" => format!("{}:{}", s("addr"), d["port"]),
-            "status_changed" => format!(
-                "ssh {} -> {} (route {})",
-                d["previous"]["ssh"].as_str().unwrap_or("?"),
-                s("ssh"),
-                s("route")
-            ),
+            "status_changed" => {
+                let was = |k: &str| d["previous"][k].as_str().unwrap_or("?").to_owned();
+                if was("ssh") == s("ssh") && was("agent") != s("agent") {
+                    format!("agent {} -> {}", was("agent"), s("agent"))
+                } else {
+                    format!("ssh {} -> {} (route {})", was("ssh"), s("ssh"), s("route"))
+                }
+            }
             "vm_rebooted" => "rebooted".to_owned(),
             "gap" => format!("not observed since {}", s("from")),
             _ => d.to_string(),
         }
     }
+}
+
+/// The event's content for `data_json`; its kind goes in its own column.
+pub(crate) fn event_data(kind: &EventKind) -> Result<serde_json::Value> {
+    // Serialized as `{"kind": .., "data": {..}}`.
+    let mut data = serde_json::to_value(kind)?;
+    Ok(data
+        .get_mut("data")
+        .map_or(serde_json::Value::Null, serde_json::Value::take))
 }
 
 /// Appends one event with the next sequence number for `(vm, source)`.
@@ -115,12 +126,7 @@ impl Db {
         .execute(&mut *tx)
         .await?;
         for (ts, kind) in events {
-            let mut data = serde_json::to_value(kind)?;
-            // `{"kind": .., "data": {..}}`: the kind goes in its own column.
-            let data = data
-                .get_mut("data")
-                .map_or(serde_json::Value::Null, serde_json::Value::take);
-            insert_event(&mut tx, vm, source, *ts, kind.name(), &data).await?;
+            insert_event(&mut tx, vm, source, *ts, kind.name(), &event_data(kind)?).await?;
         }
         prune(&mut tx, vm, taken_at.timestamp_millis()).await?;
         tx.commit().await?;
