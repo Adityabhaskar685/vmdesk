@@ -67,6 +67,9 @@ pub async fn collect(
 /// [`collect`] over an established session. A VM with an agent is synced from it
 /// while its daemon records; otherwise (and for VMs without one) the SSH probe runs.
 pub async fn collect_from(db: &Db, session: &dyn RemoteExec, vm: &Vm) -> Result<Snapshot> {
+    // A failed sync says nothing about whether the daemon still records, so the SSH
+    // snapshot then derives no events: the agent's log will cover that span.
+    let mut derive_events = true;
     if db.agent(vm.id).await.map_err(|e| store_err(&e))?.is_some() {
         match agent::sync(db, session, vm.id).await? {
             AgentProbe::Ok(synced) | AgentProbe::Outdated(synced) => return Ok(*synced.snapshot),
@@ -79,12 +82,16 @@ pub async fn collect_from(db: &Db, session: &dyn RemoteExec, vm: &Vm) -> Result<
             }
             AgentProbe::Error(e) => {
                 tracing::warn!(vm = %vm.name, error = %e, "agent sync failed; collecting over SSH");
+                derive_events = false;
             }
         }
     }
     let snapshot = SshCollector.snapshot(session).await?;
     let previous = db.latest_snapshot(vm.id).await.map_err(|e| store_err(&e))?;
-    let events = previous.map(|p| diff(&p, &snapshot)).unwrap_or_default();
+    let events = previous
+        .filter(|_| derive_events)
+        .map(|p| diff(&p, &snapshot))
+        .unwrap_or_default();
     db.record_snapshot(vm.id, SOURCE, &snapshot, &events)
         .await
         .map_err(|e| store_err(&e))?;
@@ -202,6 +209,51 @@ mod tests {
             "next poll uses the agent"
         );
         assert_eq!(agent_state(&db, vm.id).await, AgentState::Ok);
+    }
+
+    /// Collects over SSH after a sync that found the agent `broken` (or gone), with a
+    /// stored snapshot that the SSH probe's differs from, and returns the SSH events.
+    async fn ssh_events_after_fallback(broken: bool) -> usize {
+        let (db, vm) = db_with_vm().await;
+        let fake = FakeVm::new(Some(FakeAgent::recording(1..=2)));
+        agent::sync(&db, &fake, vm.id).await.unwrap();
+        let mut earlier = Snapshot::default();
+        earlier.tmux.push(vmdesk_proto::TmuxSession {
+            name: "work".into(),
+            windows: 1,
+            attached: false,
+            created: 0,
+            pane_cwd: None,
+            pane_command: None,
+        });
+        db.record_snapshot(vm.id, agent::SOURCE, &earlier, &[])
+            .await
+            .unwrap();
+        if broken {
+            fake.agent().as_mut().unwrap().output = crate::fake_vm::Output::Garbage;
+        } else {
+            *fake.agent() = None;
+        }
+        collect_from(&db, &fake, &vm).await.unwrap();
+        db.timeline(vm.id, 100, None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|e| e.source == SOURCE)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_failed_sync_leaves_the_span_to_the_agent_log() {
+        assert!(
+            ssh_events_after_fallback(false).await > 0,
+            "a gone agent: SSH diffs"
+        );
+        assert_eq!(
+            ssh_events_after_fallback(true).await,
+            0,
+            "a failed sync: no SSH events"
+        );
     }
 
     #[tokio::test]
