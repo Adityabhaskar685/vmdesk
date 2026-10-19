@@ -44,7 +44,9 @@ df -kP -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs 2>/dev/null | tai
 sec processes
 ps -eo pid=,ppid=,user:32=,etimes=,pcpu=,rss=,args= 2>/dev/null || na "ps failed"
 
-cwds=$(for d in /proc/[0-9]*; do c=$(readlink "$d/cwd" 2>/dev/null) && printf '%s\t%s\n' "${d#/proc/}" "$c"; done)
+# One ls for every process, not a readlink each: that cost a second of CPU at 400 processes.
+t=$(printf '\t')
+cwds=$(ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -n "s|^.* /proc/\([0-9]*\)/cwd -> |\1$t|p")
 sec cwds
 printf '%s\n' "$cwds"
 
