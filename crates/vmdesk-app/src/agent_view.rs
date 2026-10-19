@@ -101,7 +101,7 @@ impl AgentView {
             } => {
                 format!("agent outdated {version} · {}", synced(at))
             }
-            Self::NotRunning => "agent not running (collecting over SSH)".to_owned(),
+            Self::NotRunning => "agent not running (the next poll starts it)".to_owned(),
             Self::Error => {
                 "agent error: it did not answer properly (collecting over SSH)".to_owned()
             }
@@ -169,7 +169,7 @@ mod tests {
             (
                 Some(&record),
                 AgentState::NotRunning,
-                "agent not running (collecting over SSH)",
+                "agent not running (the next poll starts it)",
                 AgentAction::Remove,
             ),
             (

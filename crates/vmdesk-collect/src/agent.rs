@@ -30,8 +30,10 @@ const QUOTE: usize = 120;
 pub enum AgentProbe {
     /// No agent binary on the VM.
     Absent,
-    /// The agent answered, but its daemon is not running, so nothing is being recorded.
-    NotRunning,
+    /// The agent's daemon is not running, so nothing is being recorded now. Its history
+    /// up to when it stopped and a fresh snapshot were still stored: the stream command
+    /// works without the daemon.
+    NotRunning(Synced),
     /// The agent's history and a fresh snapshot were stored.
     Ok(Synced),
     /// As `Ok`, from an agent older than this laptop.
@@ -54,7 +56,7 @@ impl AgentProbe {
     pub fn state(&self) -> AgentState {
         match self {
             Self::Absent => AgentState::Absent,
-            Self::NotRunning => AgentState::NotRunning,
+            Self::NotRunning(_) => AgentState::NotRunning,
             Self::Ok(_) => AgentState::Ok,
             Self::Outdated(_) => AgentState::Outdated,
             Self::Error(_) => AgentState::Error,
@@ -119,11 +121,6 @@ async fn exchange<S: AsyncRead + AsyncWrite>(
     db.save_agent(&plan.record, plan.gap)
         .await
         .map_err(db_err)?;
-    if !plan.daemon {
-        let _ = wr.shutdown().await;
-        return Ok(Some(AgentProbe::NotRunning));
-    }
-
     let since = plan.record.last_seq;
     for msg in [WireMsg::Resume { since }, WireMsg::SnapshotRequest] {
         if let Err(e) = send(&mut wr, &msg).await {
@@ -168,7 +165,9 @@ async fn exchange<S: AsyncRead + AsyncWrite>(
         new_events,
         gap: plan.gap.is_some(),
     };
-    Ok(Some(if older_than_laptop(&plan.record.version) {
+    Ok(Some(if !plan.daemon {
+        AgentProbe::NotRunning(synced)
+    } else if older_than_laptop(&plan.record.version) {
         AgentProbe::Outdated(synced)
     } else {
         AgentProbe::Ok(synced)
@@ -511,19 +510,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stopped_daemon_is_reported_without_reading_history() {
+    async fn a_stopped_daemon_still_hands_over_its_history() {
         let (db, vm) = db_with_vm().await;
         let mut agent = FakeAgent::recording(1..=3);
         agent.daemon = false;
         let fake = FakeVm::new(Some(agent));
 
         let probe = sync(&db, &fake, vm.id).await.unwrap();
-        assert!(matches!(probe, AgentProbe::NotRunning), "{probe:?}");
-        assert!(fake.received().is_empty());
+        assert!(matches!(probe, AgentProbe::NotRunning(_)), "{probe:?}");
         assert_eq!(agent_state(&db, vm.id).await, AgentState::NotRunning);
         let record = db.agent(vm.id).await.unwrap().unwrap();
-        assert_eq!((record.agent_id, record.last_seq), (id_of(&fake), 0));
-        assert!(db.timeline(vm.id, 10, None).await.unwrap().is_empty());
+        assert_eq!((record.agent_id, record.last_seq), (id_of(&fake), 3));
+        assert_eq!(
+            seqs(&db, vm.id, &agent_source(id_of(&fake))).await,
+            [1, 2, 3]
+        );
     }
 
     #[tokio::test]

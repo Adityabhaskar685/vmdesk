@@ -259,8 +259,9 @@ can be repeated, so an interrupted install is fixed by running it again. The bin
 Once a VM has an agent, `vmdesk show` and the background poller sync it instead of running the
 probe script. Events keep the agent's own sequence numbers, so a repeated or interrupted sync
 stores each one once; events the agent rotated out before the laptop read them become a gap on
-the timeline. If the agent's daemon is not running, the poll starts it and collects over SSH
-meanwhile; a missing or misbehaving agent also falls back to SSH. The agent state (`ok`,
+the timeline. If the agent's daemon is not running, the poll still reads its history up to
+when it stopped, starts it, and leaves the span since then to the daemon, which diffs from its
+own last snapshot: no span is recorded twice. A missing or misbehaving agent falls back to SSH. The agent state (`ok`,
 `outdated`, `not_running`, `absent`, `error`) is in `vmdesk status`. An outdated agent keeps
 working; upgrades are never automatic.
 

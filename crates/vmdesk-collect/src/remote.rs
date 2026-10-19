@@ -73,10 +73,17 @@ pub async fn collect_from(db: &Db, session: &dyn RemoteExec, vm: &Vm) -> Result<
     if db.agent(vm.id).await.map_err(|e| store_err(&e))?.is_some() {
         match agent::sync(db, session, vm.id).await? {
             AgentProbe::Ok(synced) | AgentProbe::Outdated(synced) => return Ok(*synced.snapshot),
-            AgentProbe::NotRunning => match agent::start(session).await {
-                Ok(how) => tracing::info!(vm = %vm.name, how, "started the agent's daemon"),
-                Err(e) => tracing::warn!(vm = %vm.name, error = %e, "starting the agent's daemon"),
-            },
+            // The agent's log owns every span after its last snapshot: once started, its
+            // daemon diffs from there, so nothing here may derive events for that span.
+            AgentProbe::NotRunning(synced) => {
+                match agent::start(session).await {
+                    Ok(how) => tracing::info!(vm = %vm.name, how, "started the agent's daemon"),
+                    Err(e) => {
+                        tracing::warn!(vm = %vm.name, error = %e, "starting the agent's daemon");
+                    }
+                }
+                return Ok(*synced.snapshot);
+            }
             AgentProbe::Absent => {
                 tracing::warn!(vm = %vm.name, "the agent binary is gone; collecting over SSH");
             }
@@ -191,7 +198,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stopped_daemon_is_started_and_the_probe_covers_this_poll() {
+    async fn a_stopped_daemon_is_started_and_nothing_else_records_its_span() {
         let (db, vm) = db_with_vm().await;
         let mut stopped = FakeAgent::recording(1..=2);
         stopped.daemon = false;
@@ -199,8 +206,12 @@ mod tests {
         agent::sync(&db, &fake, vm.id).await.unwrap();
 
         let snap = collect_from(&db, &fake, &vm).await.unwrap();
-        assert_eq!(snap.system.hostname, "ssh-host");
+        assert_eq!(snap.system.hostname, "agent-host");
         assert!(fake.ran("\" start"));
+        assert!(
+            !fake.ran(MARKER),
+            "no SSH probe, so no events derived beside the agent's"
+        );
         assert_eq!(agent_state(&db, vm.id).await, AgentState::NotRunning);
 
         let snap = collect_from(&db, &fake, &vm).await.unwrap();

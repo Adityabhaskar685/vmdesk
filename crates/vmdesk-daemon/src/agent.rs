@@ -193,9 +193,9 @@ fn outcome(vm: &Vm, probe: &AgentProbe) -> String {
             }
             line
         }
-        AgentProbe::NotRunning => format!(
-            "not running: its daemon is stopped; `vmdesk show {}` starts it",
-            vm.name
+        AgentProbe::NotRunning(s) => format!(
+            "not running: its daemon is stopped ({} new event(s) up to then); `vmdesk show {}` starts it",
+            s.new_events, vm.name
         ),
         AgentProbe::Absent => "absent: no agent binary on the VM".to_owned(),
         AgentProbe::Error(e) => format!("error: {e}"),
