@@ -117,6 +117,20 @@ impl RemoteExec for SshSession {
             stderr,
         })
     }
+
+    async fn exec_io(&self, command: &str) -> Result<Box<dyn ByteStream>> {
+        self.touch();
+        let channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| self.err(&e))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| self.err(&e))?;
+        Ok(Box::new(channel.into_stream()))
+    }
 }
 
 #[async_trait]

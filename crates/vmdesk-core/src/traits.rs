@@ -82,6 +82,9 @@ pub struct ExecOutput {
 #[async_trait]
 pub trait RemoteExec: Send + Sync {
     async fn exec(&self, command: &str) -> Result<ExecOutput>;
+    /// Runs `command` with its stdin and stdout as one byte stream; stderr and the exit
+    /// status are dropped. Shutting the stream down sends EOF to the command's stdin.
+    async fn exec_io(&self, command: &str) -> Result<Box<dyn ByteStream>>;
 }
 
 /// Produces state for one VM. SSH-only and agent collectors share this contract.
