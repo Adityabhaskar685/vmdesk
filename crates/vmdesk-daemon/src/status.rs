@@ -1,7 +1,7 @@
 //! `vmdesk status`: check reachability now, or keep watching for changes.
 
 use chrono::Local;
-use vmdesk_core::{Vm, VmStatus};
+use vmdesk_core::{Headline, Vm, VmStatus};
 use vmdesk_db::Db;
 use vmdesk_reach::{Checked, Monitor};
 
@@ -10,14 +10,20 @@ use crate::{print_table, remote};
 /// Longest failure detail shown in the table.
 const DETAIL_WIDTH: usize = 70;
 
-/// `online (wlo1)`, `ssh failing`, `never checked`, ...
+/// `online + agent (wlo1)`, `ssh failing`, `never checked`, ...
 pub fn state_label(vm: &Vm, status: Option<&VmStatus>) -> String {
-    match status {
-        None => "never checked".to_owned(),
-        Some(s) => match &s.route {
-            Some(dev) => format!("{} ({dev})", s.headline(vm.lifecycle)),
-            None => s.headline(vm.lifecycle).to_string(),
-        },
+    let Some(s) = status else {
+        return "never checked".to_owned();
+    };
+    let headline = s.headline(vm.lifecycle);
+    let agent = if headline == Headline::Online && s.agent.collects() {
+        " + agent"
+    } else {
+        ""
+    };
+    match &s.route {
+        Some(dev) => format!("{headline}{agent} ({dev})"),
+        None => format!("{headline}{agent}"),
     }
 }
 
@@ -30,18 +36,19 @@ pub async fn status(db: &Db, names: &[String], watch: bool) -> anyhow::Result<()
     let checked = monitor
         .check_now((!only.is_empty()).then_some(only.as_slice()))
         .await?;
-    let rows: Vec<[String; 4]> = checked
+    let rows: Vec<[String; 5]> = checked
         .iter()
         .map(|c| {
             [
                 c.vm.name.clone(),
                 state_label(&c.vm, Some(&c.status)),
                 c.status.ssh.to_string(),
+                c.status.agent.to_string(),
                 c.status.detail.as_deref().map(short).unwrap_or_default(),
             ]
         })
         .collect();
-    print_table(&["NAME", "STATE", "SSH", "DETAIL"], &rows);
+    print_table(&["NAME", "STATE", "SSH", "AGENT", "DETAIL"], &rows);
     if !watch {
         return Ok(());
     }
@@ -58,18 +65,19 @@ pub async fn status(db: &Db, names: &[String], watch: bool) -> anyhow::Result<()
                 .map(|p| state_label(&c.vm, Some(p)))
                 .unwrap_or_default();
             println!(
-                "{}  {}: {before} -> {}  [ssh {}]",
+                "{}  {}: {before} -> {}  [ssh {}, agent {}]",
                 Local::now().format("%H:%M:%S"),
                 c.vm.name,
                 state_label(&c.vm, Some(&c.status)),
                 c.status.ssh,
+                c.status.agent,
             );
         })
         .await?;
     Ok(())
 }
 
-fn short(detail: &str) -> String {
+pub(crate) fn short(detail: &str) -> String {
     let line = detail.lines().next().unwrap_or_default();
     if line.chars().count() <= DETAIL_WIDTH {
         line.to_owned()

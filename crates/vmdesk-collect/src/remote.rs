@@ -1,5 +1,6 @@
-//! Laptop side: runs the probe over SSH, stores the snapshot, and turns the change since
-//! the previous one into timeline events. Also the background poller.
+//! Laptop side: runs the probe over SSH (or syncs the VM's agent), stores the snapshot,
+//! and turns the change since the previous one into timeline events. Also the
+//! background poller.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use vmdesk_db::{Db, ListFilter};
 use vmdesk_proto::{Event, Snapshot};
 use vmdesk_transport::Transport;
 
+use crate::agent::{self, AgentProbe};
 use crate::{diff, parse, probe_command};
 
 /// Event source name for snapshots taken over SSH.
@@ -59,7 +61,28 @@ pub async fn collect(
     inventory: &HashMap<VmId, Vm>,
 ) -> Result<Snapshot> {
     let session = transport.session(vm, inventory).await?;
-    let snapshot = SshCollector.snapshot(session.as_ref()).await?;
+    collect_from(db, session.as_ref(), vm).await
+}
+
+/// [`collect`] over an established session. A VM with an agent is synced from it
+/// while its daemon records; otherwise (and for VMs without one) the SSH probe runs.
+pub async fn collect_from(db: &Db, session: &dyn RemoteExec, vm: &Vm) -> Result<Snapshot> {
+    if db.agent(vm.id).await.map_err(|e| store_err(&e))?.is_some() {
+        match agent::sync(db, session, vm.id).await? {
+            AgentProbe::Ok(synced) | AgentProbe::Outdated(synced) => return Ok(*synced.snapshot),
+            AgentProbe::NotRunning => match agent::start(session).await {
+                Ok(how) => tracing::info!(vm = %vm.name, how, "started the agent's daemon"),
+                Err(e) => tracing::warn!(vm = %vm.name, error = %e, "starting the agent's daemon"),
+            },
+            AgentProbe::Absent => {
+                tracing::warn!(vm = %vm.name, "the agent binary is gone; collecting over SSH");
+            }
+            AgentProbe::Error(e) => {
+                tracing::warn!(vm = %vm.name, error = %e, "agent sync failed; collecting over SSH");
+            }
+        }
+    }
+    let snapshot = SshCollector.snapshot(session).await?;
     let previous = db.latest_snapshot(vm.id).await.map_err(|e| store_err(&e))?;
     let events = previous.map(|p| diff(&p, &snapshot)).unwrap_or_default();
     db.record_snapshot(vm.id, SOURCE, &snapshot, &events)
@@ -123,5 +146,73 @@ pub async fn poll_forever(db: &Db) -> vmdesk_db::Result<()> {
                 tracing::warn!(vm = %name, error = %e, "collection failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vmdesk_core::AgentState;
+
+    use super::*;
+    use crate::fake_vm::{FakeAgent, FakeVm, agent_state, db_with_vm};
+    use crate::probe::MARKER;
+
+    #[tokio::test]
+    async fn vms_without_an_agent_row_only_run_the_probe() {
+        let (db, vm) = db_with_vm().await;
+        // A binary is there, but the laptop has not installed or adopted it.
+        let fake = FakeVm::new(Some(FakeAgent::recording(1..=2)));
+        let snap = collect_from(&db, &fake, &vm).await.unwrap();
+        assert_eq!(snap.system.hostname, "ssh-host");
+        let commands = fake.commands.lock().unwrap().clone();
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        assert!(commands[0].contains(MARKER));
+        assert!(fake.received().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_recording_agent_replaces_the_probe() {
+        let (db, vm) = db_with_vm().await;
+        let fake = FakeVm::new(Some(FakeAgent::recording(1..=2)));
+        agent::sync(&db, &fake, vm.id).await.unwrap();
+        fake.agent().as_mut().unwrap().record(1);
+
+        let snap = collect_from(&db, &fake, &vm).await.unwrap();
+        assert_eq!(snap.system.hostname, "agent-host");
+        assert!(!fake.ran(MARKER));
+        assert_eq!(db.agent(vm.id).await.unwrap().unwrap().last_seq, 3);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_daemon_is_started_and_the_probe_covers_this_poll() {
+        let (db, vm) = db_with_vm().await;
+        let mut stopped = FakeAgent::recording(1..=2);
+        stopped.daemon = false;
+        let fake = FakeVm::new(Some(stopped));
+        agent::sync(&db, &fake, vm.id).await.unwrap();
+
+        let snap = collect_from(&db, &fake, &vm).await.unwrap();
+        assert_eq!(snap.system.hostname, "ssh-host");
+        assert!(fake.ran("\" start"));
+        assert_eq!(agent_state(&db, vm.id).await, AgentState::NotRunning);
+
+        let snap = collect_from(&db, &fake, &vm).await.unwrap();
+        assert_eq!(
+            snap.system.hostname, "agent-host",
+            "next poll uses the agent"
+        );
+        assert_eq!(agent_state(&db, vm.id).await, AgentState::Ok);
+    }
+
+    #[tokio::test]
+    async fn a_vanished_binary_falls_back_to_the_probe() {
+        let (db, vm) = db_with_vm().await;
+        let fake = FakeVm::new(Some(FakeAgent::recording(1..=2)));
+        agent::sync(&db, &fake, vm.id).await.unwrap();
+        *fake.agent() = None;
+
+        let snap = collect_from(&db, &fake, &vm).await.unwrap();
+        assert_eq!(snap.system.hostname, "ssh-host");
+        assert_eq!(agent_state(&db, vm.id).await, AgentState::Absent);
     }
 }

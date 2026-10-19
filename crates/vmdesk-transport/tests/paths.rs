@@ -1,7 +1,7 @@
 //! End-to-end transport tests against in-process russh servers: a target that answers
-//! `exec`, and a bastion that also forwards `direct-tcpip`.
+//! `exec` (and echoes stdin for `cat`), and a bastion that also forwards `direct-tcpip`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +11,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
 use russh::{Channel, ChannelId};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use vmdesk_core::{
     ConnectionPath, CredentialRef, Endpoint, EndpointKind, Error, HostKey, HostKeyStore, Lifecycle,
@@ -26,6 +26,8 @@ struct TestServer {
     name: &'static str,
     allowed: PublicKey,
     forwards: Arc<AtomicUsize>,
+    /// Channels running `cat`: stdin is echoed until the client's EOF.
+    cats: HashSet<ChannelId>,
 }
 
 impl server::Handler for TestServer {
@@ -64,6 +66,11 @@ impl server::Handler for TestServer {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
+        if data == b"cat" {
+            session.extended_data(channel, 1, b"stderr is not part of the stream".to_vec())?;
+            self.cats.insert(channel);
+            return Ok(());
+        }
         let (out, status) = match data {
             b"uname -a" => (format!("Linux {} 6.8.0 x86_64 GNU/Linux\n", self.name), 0),
             other => (
@@ -79,6 +86,31 @@ impl server::Handler for TestServer {
         session.exit_status_request(channel, status)?;
         session.eof(channel)?;
         session.close(channel)?;
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.cats.contains(&channel) {
+            session.data(channel, data.to_vec())?;
+        }
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.cats.remove(&channel) {
+            session.eof(channel)?;
+            session.exit_status_request(channel, 0)?;
+            session.close(channel)?;
+        }
         Ok(())
     }
 
@@ -120,6 +152,7 @@ async fn start(name: &'static str, allowed: PublicKey) -> (u16, PublicKey, Arc<A
         name,
         allowed,
         forwards: Arc::clone(&forwards),
+        cats: HashSet::new(),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -388,5 +421,34 @@ async fn stream_reaches_target_ssh_port_through_bastion() {
     assert_eq!(forwards.load(Ordering::SeqCst), 1);
     // The target's own key is left to the real ssh client.
     assert!(store.host_keys(target.id).await.unwrap().is_empty());
+    std::fs::remove_file(key).ok();
+}
+
+#[tokio::test]
+async fn exec_io_echoes_stdin_until_eof() {
+    let (client_pub, key) = client_key();
+    let (port, _, _) = start("target", client_pub).await;
+    let target = vm("target", port, &key, vec![]);
+    let store = Arc::new(MemStore::default());
+    let t = transport(&store, true);
+    let session = t.session(&target, &inventory(&[&target])).await.unwrap();
+
+    // Many channel windows of every byte value: binary-safe and flow-controlled.
+    let payload: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let (mut rd, mut wr) = tokio::io::split(session.exec_io("cat").await.unwrap());
+    let sent = payload.clone();
+    let writer = tokio::spawn(async move {
+        wr.write_all(&sent).await.unwrap();
+        wr.shutdown().await.unwrap();
+    });
+    let mut echoed = Vec::new();
+    // The server ends its output only after it has seen our EOF.
+    rd.read_to_end(&mut echoed).await.unwrap();
+    writer.await.unwrap();
+    assert_eq!(echoed.len(), payload.len());
+    assert!(echoed == payload, "stdout is exactly stdin, without stderr");
+
+    assert_eq!(session.exec("uname -a").await.unwrap().status, Some(0));
+    t.close_all().await;
     std::fs::remove_file(key).ok();
 }

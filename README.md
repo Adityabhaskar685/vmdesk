@@ -178,16 +178,17 @@ vmdesk status --watch lab-07        # keep watching and print changes
 ```
 
 ```text
-NAME         STATE          SSH      DETAIL
-bastion-01   online (wlo1)  ok
-lab-07       online (wlo1)  ok
-old-box      ssh failing    timeout  timed out: old-box: 10.1.2.3:22: timed out
+NAME         STATE                  SSH      AGENT    DETAIL
+bastion-01   online (wlo1)          ok       unknown
+lab-07       online + agent (wlo1)  ok       ok
+old-box      ssh failing            timeout  unknown  timed out: old-box: 10.1.2.3:22: timed out
 ```
 
 Each check looks up which laptop interface routes to the VM (or its first jump host), then logs
 in over the VM's path with a 3 s timeout per hop. The result is one of `ok`, `auth_failed`,
 `host_key`, `refused`, `timeout`, `no_route` or `error`, summarised as *online*, *ssh failing*,
-*no route*, *stopped* or *never checked*. `vmdesk list` shows the last result.
+*no route*, *stopped* or *never checked*, plus *+ agent* while the VM's agent records it (see
+[On-VM agent](#on-vm-agent)). `vmdesk list` shows the last result.
 
 `status --watch` and `vmdesk serve` keep checking: every VM when the laptop's addresses change
 (VPN up or down, Wi-Fi switch, after a 2 s settle), favourites every minute and the rest every five
@@ -216,6 +217,41 @@ uncommitted changes, ports opening and closing, reboots, and gaps when the VM wa
 `go`, `kubectl`, `helm`, ...) or runs in a tmux pane. `vmdesk serve` collects every 15 minutes
 from VMs whose last status check succeeded. Snapshots are kept compressed: all from the last
 48 hours, then hourly for 30 days, then daily.
+
+### On-VM agent
+
+The SSH collector only sees what exists at each poll. The agent runs on the VM as your user,
+records events into a local log, and hands the backlog over when the laptop connects again, so
+what happened while the laptop was off or asleep shows up on reconnect. It opens no port: the
+laptop talks to it over the VM's SSH path.
+
+```sh
+vmdesk agent install lab-07 --binary target/x86_64-unknown-linux-musl/agent/vmdesk-agent
+vmdesk agent status            # sync every VM that has an agent and show its state
+vmdesk agent sync lab-07       # fetch new events and a snapshot now
+vmdesk agent upgrade lab-07    # the same steps as install, with this build
+vmdesk agent uninstall lab-07  # stop and remove it; the history on this laptop is kept
+```
+
+```text
+NAME    STATE  VERSION  LAST SEQ  LAST CONTACT  DETAIL
+lab-07  ok     0.1.0    1834      0s ago        ok, 12 new event(s)
+```
+
+`install` checks that the VM is x86_64, sends the binary through an SSH exec channel's stdin to
+`~/.local/share/vmdesk/agent/` (mode `0700`), compares its SHA-256 on the VM with the local
+file and runs it once before renaming it into place, then runs `vmdesk-agent install`, which
+sets up a `systemd --user` service (or a `nohup` daemon where that is unavailable). Each step
+can be repeated, so an interrupted install is fixed by running it again. The binary comes from
+`--binary`, else `VMDESK_AGENT_BIN`, else `vmdesk-agent-x86_64` next to the `vmdesk` executable.
+
+Once a VM has an agent, `vmdesk show` and the background poller sync it instead of running the
+probe script. Events keep the agent's own sequence numbers, so a repeated or interrupted sync
+stores each one once; events the agent rotated out before the laptop read them become a gap on
+the timeline. If the agent's daemon is not running, the poll starts it and collects over SSH
+meanwhile; a missing or misbehaving agent also falls back to SSH. The agent state (`ok`,
+`outdated`, `not_running`, `absent`, `error`) is in `vmdesk status`. An outdated agent keeps
+working; upgrades are never automatic.
 
 ### SSH config import
 
@@ -271,6 +307,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7878/api/v1/vms
 | `GET` | `/api/v1/vms/{id}/snapshot` | Latest snapshot (404 if none yet) |
 | `POST` | `/api/v1/vms/{id}/snapshot` | Collect a snapshot now (502 if unreachable) |
 | `GET` | `/api/v1/vms/{id}/events` | Timeline, newest first. `?limit=` (default 100), `?before=` (RFC 3339) |
+| `GET` | `/api/v1/vms/{id}/agent` | The VM's agent: id, version, last seq, contact times and state (404 if none) |
 
 Create a VM that is reached through another one:
 
@@ -314,7 +351,8 @@ crates/
   vmdesk-app/         The desktop app (GPUI)
   vmdesk-transport/   SSH transport: path builder, session cache, host keys, auth
   vmdesk-reach/       Route lookup, reachability checks, network-change monitor
-  vmdesk-collect/     Probe script and parsers, snapshot diff to events, SSH collector, poller
+  vmdesk-collect/     Probe script and parsers, snapshot diff to events, SSH collector, agent
+                      sync and install, poller
   vmdesk-agent/       On-VM agent (M6, stub)
 migrations/           SQLx migrations, embedded at compile time
 ```

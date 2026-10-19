@@ -276,3 +276,59 @@ async fn snapshot_and_events_routes() {
     let events: Value = test::call_and_read_body_json(&app, req).await;
     assert_eq!(events, json!([]));
 }
+
+#[actix_web::test]
+async fn agent_route() {
+    let db = vmdesk_db::Db::open_in_memory().await.unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AppState {
+                db: db.clone(),
+                token: Arc::from(TOKEN),
+            }))
+            .configure(configure),
+    )
+    .await;
+    let req = auth(test::TestRequest::post().uri("/api/v1/vms"))
+        .set_json(
+            json!({ "name": "box", "username": "a", "endpoints": [{ "address": "10.0.0.9" }] }),
+        )
+        .to_request();
+    let vm: Value = test::call_and_read_body_json(&app, req).await;
+    let id: vmdesk_core::VmId = vm["id"].as_str().unwrap().parse().unwrap();
+    let get = |id: String| auth(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/agent")));
+
+    let res = test::call_service(&app, get(id.to_string()).to_request()).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "no agent yet");
+
+    let agent_id = uuid::Uuid::now_v7();
+    db.save_agent(
+        &vmdesk_db::AgentRecord {
+            vm: id,
+            agent_id,
+            version: "0.1.0".into(),
+            proto: 1,
+            installed_at: None,
+            last_seq: 42,
+            last_contact_at: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let body: Value = test::call_and_read_body_json(&app, get(id.to_string()).to_request()).await;
+    assert_eq!(body["agent_id"], agent_id.to_string());
+    assert_eq!(
+        (body["last_seq"].as_u64(), body["state"].as_str()),
+        (Some(42), Some("unknown"))
+    );
+
+    db.set_agent_state(id, vmdesk_core::AgentState::Outdated)
+        .await
+        .unwrap();
+    let body: Value = test::call_and_read_body_json(&app, get(id.to_string()).to_request()).await;
+    assert_eq!(body["state"], "outdated");
+
+    let res = test::call_service(&app, get(uuid::Uuid::now_v7().to_string()).to_request()).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "no VM");
+}

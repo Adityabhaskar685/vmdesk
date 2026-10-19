@@ -1,6 +1,7 @@
 //! Local HTTP API. Bound to 127.0.0.1; every route except `/api/v1/health`
 //! requires `Authorization: Bearer <token>`.
 
+mod agent;
 mod auth;
 mod error;
 mod snapshots;
@@ -59,7 +60,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/health", web::get().to(health))
             .configure(vms::routes)
             .configure(status::routes)
-            .configure(snapshots::routes),
+            .configure(snapshots::routes)
+            .configure(agent::routes),
     );
 }
 
