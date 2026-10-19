@@ -1,5 +1,6 @@
 //! `vmdesk`: the laptop daemon and CLI.
 
+mod agent;
 mod askpass;
 mod remote;
 mod show;
@@ -165,6 +166,12 @@ enum Cmd {
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: u32,
     },
+    /// Install, upgrade, remove or sync the agent that records a VM's history while
+    /// this laptop is away.
+    Agent {
+        #[command(subcommand)]
+        cmd: agent::AgentCmd,
+    },
     /// Check which VMs are reachable now: route, then SSH login.
     Status {
         /// VM names, aliases or ids (default: all).
@@ -235,6 +242,7 @@ fn main() -> anyhow::Result<ExitCode> {
             Cmd::Timeline { vm, limit } => {
                 show::timeline(&open_db(&data_dir).await?, &vm, limit).await?;
             }
+            Cmd::Agent { cmd } => agent::run(&open_db(&data_dir).await?, cmd).await?,
             Cmd::Status { vms, watch } => {
                 status::status(&open_db(&data_dir).await?, &vms, watch).await?;
             }

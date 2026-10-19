@@ -32,13 +32,13 @@ pub async fn resolve(db: &Db, name: &str) -> anyhow::Result<(Vm, HashMap<VmId, V
     Ok((found, all.into_iter().map(|v| (v.id, v)).collect()))
 }
 
-fn transport(db: &Db, accept_new_host_keys: bool) -> Transport {
+pub(crate) fn transport(db: &Db, accept_new_host_keys: bool) -> Transport {
     Transport::new(Arc::new(db.clone()) as Arc<dyn HostKeyStore>)
         .accept_new_host_keys(accept_new_host_keys)
 }
 
 /// Adds the next step to host-key errors, which are the ones a user has to act on.
-fn explain(e: vmdesk_core::Error) -> anyhow::Error {
+pub(crate) fn explain(e: vmdesk_core::Error) -> anyhow::Error {
     let hint = match &e {
         vmdesk_core::Error::UnknownHostKey { .. } => Some(
             "check the fingerprint (`ssh-keygen -lF <host>` against ~/.ssh/known_hosts, or \
