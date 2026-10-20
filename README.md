@@ -59,21 +59,41 @@ target/release/vmdesk-app lab-07     # open with a VM selected (name, alias or i
 ```
 
 The left side lists every VM with a status dot (green online, amber SSH failing, red no route,
-grey not checked) and the network interface that reaches it. Type anywhere to filter the list, use
-↑/↓ to move through it and Esc to clear the filter.
+grey not checked) and the network interface that reaches it. Under that is what you were doing
+there, the current-work line that `vmdesk show` prints, when the VM's last snapshot shows a
+command or tmux session of yours. Type anywhere to filter the list, use ↑/↓ to move through it
+and Esc to clear the filter.
 
 The right side shows the selected VM. Its header has the address and path, a status pill
 (`Online + agent`, `SSH failing`, ...) with the SSH result, route and check time, and the agent's
-state. Below it are two tabs:
+state. Below it are three tabs:
 
-- **Overview** shows the last snapshot as cards: system (uptime, load, memory and disks), tmux
-  sessions, containers, listening ports, git repositories and processes.
+- **Overview** starts with **Current work**: what you were doing on the VM, from its last snapshot
+  and work session (see [What you were doing](#what-you-were-doing-and-where-you-ran-something)).
+  It shows the command (or tmux session), the repo and branch it runs in with its uncommitted
+  changes, its tmux session and since when, under the newest note on the latest session. The
+  latest session follows: `started 16:40 · 55m · 3 repos` and `ongoing` while more activity
+  would still extend it, else when it ran, such as `yesterday 16:40 – 17:38 · 58m`.
+  **Add note** opens a field: Enter pins the note to the latest session, as `vmdesk note` does,
+  and Esc cancels. Under the card, the last snapshot follows as cards: system (uptime, load,
+  memory and disks), tmux sessions, containers, listening ports, git repositories and processes.
+- **Sessions** lists the VM's work sessions, newest first, under the day each started. Each one
+  has its title (`Untitled session` until you name it), start and end, duration, the repos it
+  touched with their branches, its most-run commands and its notes. Click a title to rename the
+  session: Enter saves (an empty title clears it) and Esc cancels. The × beside a note deletes
+  it.
 - **Timeline** tells each recorded event as a sentence under a day header (`Today`, `Yesterday`,
   `Thu 15 Oct`), at its local time, with where it came from (`agent`, `ssh` or `laptop`). For
   example, `Started python3 -m http.server 18766 in /tmp`, `SSH lost (timeout) via wlo1`, or
   `Not observed for 5h 32m`. `Agent connected and recording` marks the first sync after an install.
   Identical events in the same minute, such as many processes exiting at once, show as one row
   with a count.
+
+**Search events**, at the foot of the list, or Ctrl+K anywhere, searches the events of every VM
+the way `vmdesk search` does. Each word must match the start of a word in the event, so `upf`
+finds `pytest upf-tests/n4.py`. The search runs once typing pauses. Results come newest first
+under their day, each with the VM it happened on and the event as the timeline tells it (the
+newest 100 at most). Click one to open that VM's Timeline. Esc closes the search.
 
 Managing VMs:
 
