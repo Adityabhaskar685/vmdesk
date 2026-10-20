@@ -106,7 +106,7 @@ pub async fn sessions(db: &Db, name: &str, limit: u32) -> anyhow::Result<()> {
                 short(s.id),
                 local(s.started_at),
                 ended(s, now),
-                vmdesk_core::human_duration((s.ended_at - s.started_at).num_seconds()),
+                vmdesk_core::human::duration((s.ended_at - s.started_at).num_seconds()),
                 s.title.clone().unwrap_or_default(),
                 repos.join("; "),
                 commands.join(" · "),

@@ -9,10 +9,10 @@ use gpui::{
     Context, Div, ElementId, Entity, FontWeight, SharedString, Stateful, div, prelude::*, px, rgb,
 };
 use vmdesk_collect::work::{Anchor, CurrentWork};
+use vmdesk_core::human::{day, duration, time_on};
 use vmdesk_db::{Note, NoteId, SessionId, WorkSession};
 
 use crate::field::TextField;
-use crate::human::{day, duration, time_on};
 use crate::icon::{Icon, icon};
 use crate::kit::{Button, button, card, label, pill};
 use crate::theme::{MONO, Tone, color, radius, space, text};

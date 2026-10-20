@@ -9,6 +9,7 @@ use gpui::{
     AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString,
     Window, div, prelude::*, px, rgb, transparent_black,
 };
+use vmdesk_core::human::ago;
 use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus};
 use vmdesk_db::{NoteId, SessionId};
 
@@ -16,7 +17,6 @@ use crate::agent_view::{AgentAction, AgentView};
 use crate::backend::{Backend, Detail, Inventory, KeyProblem};
 use crate::field::TextField;
 use crate::form::AddForm;
-use crate::human::ago;
 use crate::icon::{Icon, icon};
 use crate::kit::{
     Button, backdrop, button, callout, dot, focus_ring, icon_button, label, menu, menu_action,

@@ -39,7 +39,7 @@ impl TimelineEntry {
                 Some(secs) => format!(
                     "{}  (ran at least {})",
                     s("cmdline"),
-                    vmdesk_core::human_duration(secs)
+                    vmdesk_core::human::duration(secs)
                 ),
                 None => s("cmdline"),
             },

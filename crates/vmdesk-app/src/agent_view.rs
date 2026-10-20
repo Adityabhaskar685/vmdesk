@@ -2,9 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use vmdesk_core::AgentState;
+use vmdesk_core::human::ago;
 use vmdesk_db::AgentRecord;
 
-use crate::human::ago;
 use crate::theme::Tone;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2,9 +2,9 @@
 
 use chrono::Utc;
 use gpui::{AnyElement, Div, FontWeight, div, prelude::*, px, rgb};
+use vmdesk_core::human::{ago, duration};
 use vmdesk_proto::Snapshot;
 
-use crate::human::{ago, duration};
 use crate::kit::{Col, card, col, count_badge, label, mono, table};
 use crate::theme::{color, radius, space, text};
 

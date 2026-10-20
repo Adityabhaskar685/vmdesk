@@ -39,9 +39,9 @@ pub async fn show(db: &Db, name: &str, cached: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Time since a Unix timestamp, e.g. `3h05m`.
+/// Time since a Unix timestamp, e.g. `3h 5m`.
 fn ago(secs: i64) -> String {
-    vmdesk_core::human_duration(Utc::now().timestamp() - secs)
+    vmdesk_core::human::duration(Utc::now().timestamp() - secs)
 }
 
 fn gb(kb: u64) -> String {

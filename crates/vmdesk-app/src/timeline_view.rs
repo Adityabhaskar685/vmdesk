@@ -6,10 +6,10 @@ use std::str::FromStr;
 use chrono::{DateTime, Local, Utc};
 use gpui::{Div, FontWeight, div, prelude::*, px, rgb};
 use serde_json::Value;
+use vmdesk_core::human::{day, duration, time_on};
 use vmdesk_core::{AgentState, SshState};
 use vmdesk_db::TimelineEntry;
 
-use crate::human::{day, duration, time_on};
 use crate::kit::label;
 use crate::theme::{MONO, Tone, color, space, text};
 

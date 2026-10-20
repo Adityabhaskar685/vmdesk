@@ -10,11 +10,11 @@ use gpui::{
     px, rgb,
 };
 use vmdesk_core::VmId;
+use vmdesk_core::human::day;
 use vmdesk_db::SearchHit;
 
 use crate::backend::SEARCH_LIMIT;
 use crate::field::TextField;
-use crate::human::day;
 use crate::kit::{callout, label};
 use crate::theme::{Tone, color, radius, space, text};
 use crate::timeline_view::{Row, day_header, describe, marker, sentence, text_of, time_cell};

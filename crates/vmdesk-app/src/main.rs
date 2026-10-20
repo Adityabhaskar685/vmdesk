@@ -7,7 +7,6 @@ mod chrome;
 mod field;
 mod form;
 mod gpu;
-mod human;
 mod icon;
 mod kit;
 mod overview;

@@ -1,9 +1,10 @@
-//! Durations, times and days as the app writes them.
+//! Durations, times and days as the app and the CLI write them.
 
 use chrono::{DateTime, Datelike, Local};
 
 /// `45s`, `1m 10s`, `12m`, `5h 32m`, `2d 4h`: two units at most, the second dropped when
 /// it is zero or too small to matter.
+#[must_use]
 pub fn duration(secs: i64) -> String {
     let d = secs.max(0);
     let (big, small, units) = match d {
@@ -21,6 +22,7 @@ pub fn duration(secs: i64) -> String {
 }
 
 /// How long ago, in its largest unit: `45s`, `12m`, `5h`, `3d`.
+#[must_use]
 pub fn ago(secs: i64) -> String {
     let d = secs.max(0);
     match d {
@@ -32,6 +34,7 @@ pub fn ago(secs: i64) -> String {
 }
 
 /// `Today`, `Yesterday`, `Thu 15 Oct`, or `Thu 15 Oct 2025` in another year.
+#[must_use]
 pub fn day(at: DateTime<Local>, now: DateTime<Local>) -> String {
     let (d, today) = (at.date_naive(), now.date_naive());
     if d == today {
@@ -46,6 +49,7 @@ pub fn day(at: DateTime<Local>, now: DateTime<Local>) -> String {
 }
 
 /// `18:31` when `at` falls on the same day as `on`, else `Thu 15 Oct 18:31`.
+#[must_use]
 pub fn time_on(at: DateTime<Local>, on: DateTime<Local>) -> String {
     if at.date_naive() == on.date_naive() {
         at.format("%H:%M").to_string()

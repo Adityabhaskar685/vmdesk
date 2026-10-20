@@ -166,7 +166,7 @@ fn row(vm: &Vm, state: AgentState, agent: Option<&AgentRecord>, detail: &str) ->
         |t| {
             format!(
                 "{} ago",
-                vmdesk_core::human_duration((Utc::now() - t).num_seconds())
+                vmdesk_core::human::ago((Utc::now() - t).num_seconds())
             )
         },
     );
