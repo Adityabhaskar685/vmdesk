@@ -4,6 +4,9 @@ mod agents;
 mod error;
 mod inventory;
 mod known_hosts;
+mod notes;
+mod search;
+mod sessions;
 mod status;
 mod sync;
 mod timeline;
@@ -15,6 +18,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 pub use agents::{AgentRecord, agent_source};
 pub use error::{Error, Result};
 pub use inventory::{EndpointInput, ListFilter, NewVm, VmPatch};
+pub use notes::{Note, NoteId};
+pub use search::SearchHit;
+pub use sessions::{CommandRuns, IDLE_GAP, RepoTouched, SessionId, SessionSummary, WorkSession};
 pub use sync::SyncReport;
 pub use timeline::TimelineEntry;
 
@@ -46,7 +52,9 @@ impl Db {
             .connect_with(opts)
             .await?;
         sqlx::migrate!("../../migrations").run(&pool).await?;
-        Ok(Self { pool })
+        let db = Self { pool };
+        sessions::backfill(&db).await?;
+        Ok(db)
     }
 
     #[must_use]
@@ -65,9 +73,17 @@ impl Db {
 #[cfg(test)]
 pub(crate) async fn db_with_vm() -> (Db, vmdesk_core::VmId) {
     let db = Db::open_in_memory().await.unwrap();
-    let vm = db
-        .create_vm(NewVm {
-            name: "box".into(),
+    let vm = tests::add_vm(&db, "box").await;
+    (db, vm)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub(crate) async fn add_vm(db: &Db, name: &str) -> vmdesk_core::VmId {
+        db.create_vm(NewVm {
+            name: name.into(),
             username: "u".into(),
             credential: vmdesk_core::CredentialRef::SshAgent,
             endpoints: vec![EndpointInput {
@@ -81,13 +97,9 @@ pub(crate) async fn db_with_vm() -> (Db, vmdesk_core::VmId) {
             favourite: false,
         })
         .await
-        .unwrap();
-    (db, vm.id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
+        .unwrap()
+        .id
+    }
 
     #[tokio::test]
     async fn migrates_empty_inventory() {
