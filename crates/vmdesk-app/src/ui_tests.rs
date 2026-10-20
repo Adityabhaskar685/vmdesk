@@ -467,9 +467,9 @@ fn the_timeline_reads_as_sentences_under_day_headers(cx: &mut TestAppContext) {
         );
         days.into_iter()
             .flat_map(|d| d.rows)
-            .find(|r| crate::timeline_view::text_of(&r.title).starts_with("Not observed"))
+            .find(|r| vmdesk_db::text_of(&r.title).starts_with("Not observed"))
             .and_then(|r| r.detail)
-            .map(|d| crate::timeline_view::text_of(&d))
+            .map(|d| vmdesk_db::text_of(&d))
             .unwrap()
     });
     let local =

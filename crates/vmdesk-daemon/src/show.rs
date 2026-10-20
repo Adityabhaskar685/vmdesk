@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, Utc};
 use vmdesk_core::HostKeyStore;
-use vmdesk_db::Db;
+use vmdesk_db::{Db, TimelineEntry, text_of};
 use vmdesk_proto::Snapshot;
 use vmdesk_transport::Transport;
 
@@ -214,10 +214,26 @@ pub async fn timeline(db: &Db, name: &str, limit: u32) -> anyhow::Result<()> {
         return Ok(());
     }
     entries.reverse();
-    for e in &entries {
-        println!("{}  {:<20} {}", local(e.ts), e.kind, e.summary());
-    }
+    let rows: Vec<[String; 5]> = entries
+        .iter()
+        .map(|e| {
+            let [category, source, event, detail] = event_cells(e);
+            [local(e.ts), category, source, event, detail]
+        })
+        .collect();
+    print_table(&["WHEN", "CATEGORY", "SOURCE", "EVENT", "DETAIL"], &rows);
     Ok(())
+}
+
+/// An event's category, source, sentence and detail, as the app's timeline says them.
+pub(crate) fn event_cells(e: &TimelineEntry) -> [String; 4] {
+    let text = e.text();
+    [
+        text.category.name().to_owned(),
+        e.source_tag().to_owned(),
+        text_of(&text.title),
+        text.detail.as_deref().map(text_of).unwrap_or_default(),
+    ]
 }
 
 pub(crate) fn local(ts: DateTime<Utc>) -> String {

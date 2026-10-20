@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, Local, Utc};
 use clap::Subcommand;
 use vmdesk_db::{Db, SessionId, WorkSession};
 
-use crate::show::local;
+use crate::show::{event_cells, local};
 use crate::{print_table, remote};
 
 /// Commands shown per session in `vmdesk sessions`.
@@ -207,22 +207,18 @@ pub async fn search(
         println!("no events match {query:?}");
         return Ok(());
     }
-    let rows: Vec<[String; 4]> = hits
+    let rows: Vec<[String; 6]> = hits
         .into_iter()
         .map(|h| {
-            [
-                h.event
-                    .ts
-                    .with_timezone(&Local)
-                    .format("%Y-%m-%d %H:%M")
-                    .to_string(),
-                h.vm_name,
-                h.event.kind,
-                h.summary,
-            ]
+            let [category, source, event, detail] = event_cells(&h.event);
+            let when = h.event.ts.with_timezone(&Local).format("%Y-%m-%d %H:%M");
+            [when.to_string(), h.vm_name, category, source, event, detail]
         })
         .collect();
-    print_table(&["WHEN", "VM", "EVENT", "DETAIL"], &rows);
+    print_table(
+        &["WHEN", "VM", "CATEGORY", "SOURCE", "EVENT", "DETAIL"],
+        &rows,
+    );
     Ok(())
 }
 

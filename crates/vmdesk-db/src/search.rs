@@ -17,8 +17,6 @@ pub struct SearchHit {
     pub vm_name: String,
     #[serde(flatten)]
     pub event: TimelineEntry,
-    /// [`TimelineEntry::summary`].
-    pub summary: String,
 }
 
 /// An FTS5 query matching events that contain every word of `input`, each as the
@@ -58,12 +56,10 @@ impl Db {
         .await?;
         rows.iter()
             .map(|r| {
-                let event = entry_from_row(r)?;
                 Ok(SearchHit {
                     vm: parse_id(&r.try_get::<String, _>("vm_id")?)?,
                     vm_name: r.try_get("vm_name")?,
-                    summary: event.summary(),
-                    event,
+                    event: entry_from_row(r)?,
                 })
             })
             .collect()
@@ -102,7 +98,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|h| format!("{} {}", h.vm_name, h.summary))
+            .map(|h| format!("{} {}", h.vm_name, crate::text_of(&h.event.text().title)))
             .collect()
     }
 
@@ -158,8 +154,8 @@ mod tests {
         assert_eq!(
             found(&db, "upf").await,
             [
-                "other /root/regal on group2-fix: Fix the UPF teardown",
-                "box pytest upf-tests/test_n4.py  (in /root/regal)",
+                "other Committed on group2-fix: Fix the UPF teardown",
+                "box Started pytest upf-tests/test_n4.py",
             ]
         );
         assert_eq!(found(&db, "upf-tests").await.len(), 1);
@@ -214,7 +210,7 @@ mod tests {
         db.delete_vm(vm).await.unwrap();
         assert_eq!(
             found(&db, "pytest").await,
-            ["other pytest tests/group5  (in /r)"]
+            ["other Started pytest tests/group5"]
         );
         index_ok(&db).await;
     }
@@ -263,7 +259,7 @@ mod tests {
         let db = Db::open(&path).await.unwrap();
         assert_eq!(
             found(&db, "upf-tests").await,
-            ["dev93 pytest upf-tests  (in /r)"]
+            ["dev93 Started pytest upf-tests"]
         );
         let vm: VmId = "01a13ec9-3d0b-7088-9c63-cd603a3dc958".parse().unwrap();
         assert_eq!(

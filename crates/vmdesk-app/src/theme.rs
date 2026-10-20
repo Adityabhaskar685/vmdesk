@@ -72,23 +72,14 @@ pub const MONO: &str = "Noto Sans Mono";
 /// Height of buttons and inputs.
 pub const CONTROL_HEIGHT: Pixels = px(30.);
 
-/// What a status means to the user, whatever it is about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tone {
-    Good,
-    Warn,
-    Bad,
-    Neutral,
-}
+pub use vmdesk_db::Tone;
 
-impl Tone {
-    pub fn color(self) -> u32 {
-        match self {
-            Self::Good => color::GREEN,
-            Self::Warn => color::AMBER,
-            Self::Bad => color::RED,
-            Self::Neutral => color::GREY,
-        }
+pub fn tone_color(tone: Tone) -> u32 {
+    match tone {
+        Tone::Good => color::GREEN,
+        Tone::Warn => color::AMBER,
+        Tone::Bad => color::RED,
+        Tone::Neutral => color::GREY,
     }
 }
 

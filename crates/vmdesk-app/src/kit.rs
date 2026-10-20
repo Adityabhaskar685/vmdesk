@@ -7,7 +7,9 @@ use gpui::{
 };
 
 use crate::icon::{Icon, icon};
-use crate::theme::{CONTROL_HEIGHT, MONO, Tone, alpha, color, radius, space, text, tint};
+use crate::theme::{
+    CONTROL_HEIGHT, MONO, Tone, alpha, color, radius, space, text, tint, tone_color,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Button {
@@ -97,7 +99,7 @@ pub fn dot(c: u32, size: f32) -> Div {
 
 /// A rounded, tinted badge with a leading dot: a status at a glance.
 pub fn pill(tone: Tone, content: impl Into<SharedString>) -> Div {
-    let c = tone.color();
+    let c = tone_color(tone);
     div()
         .h(px(22.))
         .px(space::S)
@@ -149,8 +151,8 @@ pub fn callout(tone: Tone) -> Div {
         .gap(space::M)
         .rounded(radius::M)
         .border_1()
-        .border_color(alpha(tone.color(), 0x80))
-        .bg(tint(tone.color()))
+        .border_color(alpha(tone_color(tone), 0x80))
+        .bg(tint(tone_color(tone)))
         .text_size(text::BODY)
 }
 

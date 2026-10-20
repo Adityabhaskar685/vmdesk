@@ -164,6 +164,16 @@ build-01     online + agent (wlan0)  ok       ok
 gpu-lab      ssh failing (tun0)      timeout  unknown  timed out: gpu-lab: 192.0.2.40:22: timed out
 ```
 
+`vmdesk timeline` (oldest first) and `vmdesk search` (newest first) tell each event in the
+words of the app's Timeline:
+
+```text
+WHEN         CATEGORY  SOURCE  EVENT                           DETAIL
+10-21 00:16  git       agent   3 uncommitted changes           in /home/dev/src/inventory-service · was 0
+10-21 00:27  process   agent   Started cargo test --workspace  in /home/dev/src/inventory-service
+10-21 00:34  status    laptop  Agent connected and recording
+```
+
 Logging in tries the VM's key file or keychain password, then ssh-agent, then
 `~/.ssh/id_ed25519`, `id_ecdsa` and `id_rsa`. Load passphrase-protected keys into ssh-agent.
 
@@ -260,7 +270,7 @@ crates/
   vmdesk-proto/       Snapshot, event and wire-protocol types shared with the agent
   vmdesk-core/        Domain model and traits: Provider, HopConnector, Collector
   vmdesk-db/          SQLite: inventory, provider sync, status, snapshots, timeline,
-                      work sessions, notes, search
+                      work sessions, notes, search; each event in words
   vmdesk-providers/   Static and SSH config providers
   vmdesk-transport/   SSH transport: path builder, session cache, host keys, login
   vmdesk-reach/       Route lookup, reachability checks, network-change monitor

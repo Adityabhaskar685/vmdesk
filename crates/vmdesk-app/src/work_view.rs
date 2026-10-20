@@ -10,13 +10,13 @@ use gpui::{
 };
 use vmdesk_collect::work::{Anchor, CurrentWork};
 use vmdesk_core::human::{day, duration, time_on};
-use vmdesk_db::{Note, NoteId, SessionId, WorkSession};
+use vmdesk_db::{Line, Note, NoteId, SessionId, Span, WorkSession, code, plain, text_of};
 
 use crate::field::TextField;
 use crate::icon::{Icon, icon};
 use crate::kit::{Button, button, card, label, pill};
 use crate::theme::{MONO, Tone, color, radius, space, text};
-use crate::timeline_view::{Line, Span, code, day_header, plain, text_of};
+use crate::timeline_view::day_header;
 use crate::ui::AppView;
 
 /// Commands listed per session, most runs first.

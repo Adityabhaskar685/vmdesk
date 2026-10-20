@@ -295,7 +295,10 @@ mod tests {
             )
         );
         let newest = db.timeline(vm, 1, None).await.unwrap();
-        assert_eq!(newest[0].summary(), "agent ok -> not_running");
+        assert_eq!(
+            crate::text_of(&newest[0].text().title),
+            "Agent stopped recording"
+        );
 
         db.delete_vm(vm).await.unwrap();
         assert_eq!(db.set_agent_state(vm, AgentState::Ok).await.unwrap(), None);

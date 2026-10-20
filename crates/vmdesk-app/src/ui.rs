@@ -23,7 +23,9 @@ use crate::kit::{
     menu_disabled, menu_separator, pill, popover,
 };
 use crate::search_view::{DEBOUNCE, Search, SearchState};
-use crate::theme::{CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint};
+use crate::theme::{
+    CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint, tone_color,
+};
 use crate::work_view::{card_view, present_sessions, present_work, sessions_view, sidebar_line};
 
 /// How often the list re-reads the database (the monitor writes status there).
@@ -1166,7 +1168,7 @@ impl AppView {
                 this.close_search(window, cx);
                 this.select(id, cx);
             }))
-            .child(dot(headline_tone(self.headline(vm)).color(), 8.).mt(px(6.)))
+            .child(dot(tone_color(headline_tone(self.headline(vm))), 8.).mt(px(6.)))
             .child(
                 div()
                     .flex_1()
@@ -1386,7 +1388,7 @@ impl AppView {
                             .gap(px(6.))
                             .text_size(text::META)
                             .text_color(rgb(color::TEXT_SECONDARY))
-                            .child(dot(agent.tone().color(), 6.))
+                            .child(dot(tone_color(agent.tone()), 6.))
                             .child(text.clone()),
                     )
             })

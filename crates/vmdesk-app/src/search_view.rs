@@ -11,13 +11,13 @@ use gpui::{
 };
 use vmdesk_core::VmId;
 use vmdesk_core::human::day;
-use vmdesk_db::SearchHit;
+use vmdesk_db::{SearchHit, text_of};
 
 use crate::backend::SEARCH_LIMIT;
 use crate::field::TextField;
 use crate::kit::{callout, label};
 use crate::theme::{Tone, color, radius, space, text};
-use crate::timeline_view::{Row, day_header, describe, marker, sentence, text_of, time_cell};
+use crate::timeline_view::{Row, day_header, describe, marker, sentence, time_cell};
 use crate::ui::AppView;
 
 /// How long typing must pause before the query runs.
@@ -258,7 +258,6 @@ mod tests {
         SearchHit {
             vm: VmId::new(),
             vm_name: vm_name.into(),
-            summary: event.summary(),
             event,
         }
     }

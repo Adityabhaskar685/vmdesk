@@ -2,6 +2,7 @@
 
 mod agents;
 mod error;
+mod event_text;
 mod inventory;
 mod known_hosts;
 mod notes;
@@ -17,6 +18,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 pub use agents::{AgentRecord, agent_source};
 pub use error::{Error, Result};
+pub use event_text::{Category, EventText, Line, Span, Tone, code, plain, text_of};
 pub use inventory::{EndpointInput, ListFilter, NewVm, VmPatch};
 pub use notes::{Note, NoteId};
 pub use search::SearchHit;

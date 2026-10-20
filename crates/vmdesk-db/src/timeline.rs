@@ -27,44 +27,6 @@ pub struct TimelineEntry {
     pub data: serde_json::Value,
 }
 
-impl TimelineEntry {
-    /// One line describing the event, for lists.
-    #[must_use]
-    pub fn summary(&self) -> String {
-        let d = &self.data;
-        let s = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        match self.kind.as_str() {
-            "process_started" => format!("{}  (in {})", s("cmdline"), s("cwd")),
-            "process_exited" => match d.get("duration_secs").and_then(serde_json::Value::as_i64) {
-                Some(secs) => format!(
-                    "{}  (ran at least {})",
-                    s("cmdline"),
-                    vmdesk_core::human::duration(secs)
-                ),
-                None => s("cmdline"),
-            },
-            "container_started" | "container_stopped" => format!("{} ({})", s("name"), s("image")),
-            "tmux_created" | "tmux_closed" | "tmux_attached" => s("name"),
-            "git_branch_changed" => format!("{}: {} -> {}", s("repo"), s("from"), s("to")),
-            "git_committed" => format!("{} on {}: {}", s("repo"), s("branch"), s("subject")),
-            "git_dirty_changed" => format!("{}: {} -> {} modified", s("repo"), d["from"], d["to"]),
-            "listener_opened" => format!("{}:{} {}", s("addr"), d["port"], s("process")),
-            "listener_closed" => format!("{}:{}", s("addr"), d["port"]),
-            "status_changed" => {
-                let was = |k: &str| d["previous"][k].as_str().unwrap_or("?").to_owned();
-                if was("ssh") == s("ssh") && was("agent") != s("agent") {
-                    format!("agent {} -> {}", was("agent"), s("agent"))
-                } else {
-                    format!("ssh {} -> {} (route {})", was("ssh"), s("ssh"), s("route"))
-                }
-            }
-            "vm_rebooted" => "rebooted".to_owned(),
-            "gap" => format!("not observed since {}", s("from")),
-            _ => d.to_string(),
-        }
-    }
-}
-
 /// The event's content for `data_json`; its kind goes in its own column.
 pub(crate) fn event_data(kind: &EventKind) -> Result<serde_json::Value> {
     // Serialized as `{"kind": .., "data": {..}}`.
