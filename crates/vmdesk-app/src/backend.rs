@@ -137,8 +137,13 @@ impl Backend {
             let vms = db.list_vms(&ListFilter::default()).await?;
             let mut work = HashMap::new();
             for vm in &vms {
-                if let Some(line) = work_line(&db, vm.id).await? {
-                    work.insert(vm.id, line);
+                match work_line(&db, vm.id).await {
+                    Ok(Some(line)) => {
+                        work.insert(vm.id, line);
+                    }
+                    Ok(None) => {}
+                    // One unreadable snapshot must not stop the list updating.
+                    Err(e) => tracing::debug!(vm = %vm.name, error = %e, "no current-work line"),
                 }
             }
             Ok(Inventory {

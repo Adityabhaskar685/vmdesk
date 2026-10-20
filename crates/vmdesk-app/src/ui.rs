@@ -50,6 +50,13 @@ enum Inline {
     },
 }
 
+impl Inline {
+    fn field(&self) -> &Entity<TextField> {
+        let (Self::Note(field) | Self::Rename { field, .. }) = self;
+        field
+    }
+}
+
 /// A change to a VM's notes or sessions, with the message to show once it is done.
 type WorkChange = std::pin::Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>>>>;
 
@@ -179,6 +186,7 @@ impl AppView {
                 {
                     self.selected = None;
                     self.detail = None;
+                    self.inline = None;
                     self.confirm = None;
                     self.menu_open = false;
                 }
@@ -238,6 +246,11 @@ impl AppView {
                             });
                         if !stale && v.collected_at.is_none() {
                             v.collected_at = Some(Instant::now());
+                        }
+                        if let Some(Inline::Rename { session, .. }) = &v.inline
+                            && !d.sessions.iter().any(|s| s.id == *session)
+                        {
+                            v.inline = None;
                         }
                         v.detail = Some(d);
                     }
@@ -329,26 +342,26 @@ impl AppView {
             self.open_search(window, cx);
             return;
         }
-        if self.inline.is_some() {
-            match ks.key.as_str() {
-                "enter" => self.save_inline(window, cx),
-                "escape" => self.cancel_inline(window, cx),
-                _ => {}
-            }
-            return;
-        }
-        if self.search.is_some() {
-            if ks.key == "escape" {
-                self.close_search(window, cx);
-            }
-            return;
-        }
-        if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform {
-            return;
-        }
+        // A field that lost focus stays open with its text; the keys go back to the list.
+        let in_inline = self
+            .inline
+            .as_ref()
+            .is_some_and(|i| i.field().read(cx).focus_handle().is_focused(window));
+        let in_search = self
+            .search
+            .as_ref()
+            .is_some_and(|s| s.field.read(cx).focus_handle().is_focused(window));
         match ks.key.as_str() {
             "escape" if self.menu_open => self.menu_open = false,
+            "escape" if self.inline.is_some() => self.cancel_inline(window, cx),
+            "escape" if self.search.is_some() => self.close_search(window, cx),
+            "enter" if in_inline => self.save_inline(window, cx),
+            _ if in_inline || in_search => return,
+            _ if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform => return,
             "up" | "down" => {
+                if self.search.is_some() {
+                    self.close_search(window, cx);
+                }
                 self.step_selection(ks.key == "up", cx);
                 return;
             }
@@ -439,12 +452,12 @@ impl AppView {
         window.focus(&form.first_field(cx), cx);
         self.add = Some(form);
         self.search = None;
+        self.inline = None;
         cx.notify();
     }
 
     fn open_inline(&mut self, inline: Inline, window: &mut Window, cx: &mut Context<Self>) {
-        let (Inline::Note(field) | Inline::Rename { field, .. }) = &inline;
-        window.focus(&field.read(cx).focus_handle().clone(), cx);
+        window.focus(&inline.field().read(cx).focus_handle().clone(), cx);
         self.inline = Some(inline);
         cx.notify();
     }
@@ -478,14 +491,12 @@ impl AppView {
     /// Saves the inline field: the note goes to the latest session, as `vmdesk note`
     /// does; an empty title clears the session's title.
     fn save_inline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(vm), Some(inline)) = (self.selected, self.inline.take()) else {
-            return;
-        };
-        let job: WorkChange = match &inline {
-            Inline::Note(field) => {
+        let Some(vm) = self.selected else { return };
+        let job: WorkChange = match &self.inline {
+            None => return,
+            Some(Inline::Note(field)) => {
                 let body = field.read(cx).text().trim().to_owned();
                 if body.is_empty() {
-                    self.inline = Some(inline);
                     return;
                 }
                 let name = self
@@ -504,7 +515,7 @@ impl AppView {
                     }))
                 })
             }
-            Inline::Rename { session, field } => {
+            Some(Inline::Rename { session, field }) => {
                 let rename = self
                     .backend
                     .rename_session(*session, field.read(cx).text().to_owned());
@@ -514,11 +525,12 @@ impl AppView {
                 })
             }
         };
+        let field = self.inline.take();
         window.focus(&self.focus, cx);
-        Self::after(vm, job, cx);
+        Self::after(vm, job, field, window, cx);
     }
 
-    pub(crate) fn delete_note(&mut self, id: NoteId, cx: &mut Context<Self>) {
+    pub(crate) fn delete_note(&mut self, id: NoteId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(vm) = self.selected else { return };
         let delete = self.backend.delete_note(id);
         Self::after(
@@ -527,20 +539,33 @@ impl AppView {
                 delete.await.context("deleting the note")?;
                 Ok(None)
             }),
+            None,
+            window,
             cx,
         );
     }
 
     /// Runs a change to `vm`'s work record, shows its message or error, and reloads the
-    /// VM's detail.
-    fn after(vm: VmId, job: WorkChange, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
+    /// VM's detail. If it fails, the field it came from opens again with its text.
+    fn after(
+        vm: VmId,
+        job: WorkChange,
+        field: Option<Inline>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
             let res = job.await;
-            this.update(cx, |v, cx| {
+            this.update_in(cx, |v, window, cx| {
                 match res {
                     Ok(Some(m)) => v.message = Some((m, false)),
                     Ok(None) => {}
-                    Err(e) => v.message = Some((format!("{e:#}"), true)),
+                    Err(e) => {
+                        v.message = Some((format!("{e:#}"), true));
+                        if let Some(field) = field.filter(|_| v.selected == Some(vm)) {
+                            v.open_inline(field, window, cx);
+                        }
+                    }
                 }
                 if v.selected == Some(vm) {
                     v.load_detail(vm, cx);
@@ -555,6 +580,9 @@ impl AppView {
 
     /// Opens the event search, or moves the focus back into it.
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.add.is_some() {
+            return;
+        }
         let search = self.search.get_or_insert_with(|| Search::new(cx));
         let focus = search.field.read(cx).focus_handle().clone();
         window.focus(&focus, cx);
@@ -1186,6 +1214,15 @@ impl AppView {
         if let Some(search) = &self.search {
             return div()
                 .id("search-pane")
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        if let Some(s) = &this.search {
+                            window.focus(&s.field.read(cx).focus_handle().clone(), cx);
+                            window.prevent_default();
+                        }
+                    }),
+                )
                 .flex_1()
                 .min_w_0()
                 .h_full()
@@ -1215,7 +1252,32 @@ impl AppView {
         };
         let header = self.render_header(vm, cx);
 
-        let body = match (&self.detail, self.tab) {
+        let body = self.tab_body(cx);
+
+        div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(header)
+            .child(
+                div()
+                    .id("detail-body")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px(space::XL)
+                    .pt(space::L)
+                    .pb(space::XL)
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
+    /// The selected VM's open tab.
+    fn tab_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        match (&self.detail, self.tab) {
             (None, _) => div().child(label("Loading…")).into_any_element(),
             (Some(d), Tab::Overview) => {
                 let work = present_work(d.work.as_ref(), &d.sessions, &d.notes, Local::now());
@@ -1249,27 +1311,7 @@ impl AppView {
                 &crate::timeline_view::present(&d.timeline, chrono::Local::now()),
             )
             .into_any_element(),
-        };
-
-        div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(header)
-            .child(
-                div()
-                    .id("detail-body")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .px(space::XL)
-                    .pt(space::L)
-                    .pb(space::XL)
-                    .child(body),
-            )
-            .into_any_element()
+        }
     }
 
     /// `direct`, or `via bastion → inner` for the VM's preferred path.

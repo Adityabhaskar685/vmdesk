@@ -689,7 +689,13 @@ fn a_note_added_on_the_card_lands_on_the_latest_session(cx: &mut TestAppContext)
     click(cx, "add-note");
     assert!(!shown(cx, "add-note"), "the button gives way to the field");
     cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert!(notes_of(&env, vm).is_empty(), "an empty note is not saved");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.message.clone()),
+        None,
+        "nor sent"
+    );
     cx.simulate_keystrokes("f l a k y space n 4 space t e s t enter");
     wait(cx, &view, "the note", |v| {
         v.detail.as_ref().is_some_and(|d| d.notes.len() == 1)
@@ -748,14 +754,17 @@ fn search_finds_an_event_on_another_vm_and_opens_its_timeline(cx: &mut TestAppCo
         "nothing to search for is quiet"
     );
 
-    cx.simulate_keystrokes("backspace backspace backspace u p f - t e s t");
+    cx.simulate_keystrokes("backspace backspace u p f");
+    cx.executor().advance_clock(DEBOUNCE / 2);
+    cx.simulate_keystrokes("- t e s t");
+    cx.executor().advance_clock(DEBOUNCE / 2);
     cx.run_until_parked();
     assert_eq!(
         search_state(cx, &view),
         "Some(Idle)",
-        "no query until typing pauses"
+        "no query until typing pauses, and each edit restarts the wait"
     );
-    cx.executor().advance_clock(DEBOUNCE);
+    cx.executor().advance_clock(DEBOUNCE / 2);
     wait(cx, &view, "the hits", |v| {
         matches!(
             v.search.as_ref().map(|s| &s.state),
@@ -786,4 +795,67 @@ fn search_finds_an_event_on_another_vm_and_opens_its_timeline(cx: &mut TestAppCo
         view.read_with(cx, |v, _| v.search.is_none()),
         "Esc closes it"
     );
+}
+
+#[gpui::test]
+fn a_field_that_loses_focus_gives_the_keys_back(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let (view, cx) = open_lab(cx, &env);
+    let field_text = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, cx| {
+            v.inline
+                .as_ref()
+                .map(|i| i.field().read(cx).text().to_owned())
+        })
+    };
+
+    click(cx, "add-note");
+    cx.simulate_keystrokes("h a l f");
+    click(cx, "work: pytest tests/group2");
+    cx.simulate_keystrokes("x enter");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.filter.clone()),
+        "x",
+        "typing filters the list again"
+    );
+    assert_eq!(
+        field_text(cx).as_deref(),
+        Some("half"),
+        "the field keeps its text"
+    );
+    assert!(
+        notes_of(&env, vm).is_empty(),
+        "Enter outside it saves nothing"
+    );
+
+    cx.simulate_keystrokes("escape");
+    assert_eq!(field_text(cx), None, "Esc closes it");
+    assert_eq!(view.read_with(cx, |v, _| v.filter.clone()), "x");
+}
+
+#[gpui::test]
+fn a_rename_the_database_refuses_keeps_its_text(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "tab-sessions");
+    click(cx, "session: Untitled session");
+    let too_long = vec!["x"; 201].join(" ");
+    cx.simulate_keystrokes(&too_long);
+    cx.simulate_keystrokes("enter");
+    wait(cx, &view, "the refusal", |v| {
+        v.message.as_ref().is_some_and(|(_, err)| *err)
+    });
+    let kept = view.read_with(cx, |v, cx| {
+        v.inline
+            .as_ref()
+            .map(|i| i.field().read(cx).text().chars().count())
+    });
+    assert_eq!(kept, Some(201), "the field is back with what was typed");
+    assert_eq!(sessions_of(&env, vm)[0].title, None);
 }

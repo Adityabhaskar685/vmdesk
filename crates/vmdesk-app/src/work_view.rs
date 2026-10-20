@@ -375,7 +375,7 @@ fn note_view(n: &NoteRow, cx: &mut Context<AppView>) -> Div {
             let body = n.body.clone();
             small_icon_button(ElementId::Name(format!("delete-note-{id}").into()))
                 .debug_selector(move || format!("delete note: {body}"))
-                .on_click(cx.listener(move |this, _, _, cx| this.delete_note(id, cx)))
+                .on_click(cx.listener(move |this, _, window, cx| this.delete_note(id, window, cx)))
         })
 }
 

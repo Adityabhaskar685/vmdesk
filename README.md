@@ -89,7 +89,7 @@ state. Below it are three tabs:
   Identical events in the same minute, such as many processes exiting at once, show as one row
   with a count.
 
-**Search events**, at the foot of the list, or Ctrl+K anywhere, searches the events of every VM
+**Search events**, at the foot of the list, or Ctrl+K, searches the events of every VM
 the way `vmdesk search` does. Each word must match the start of a word in the event, so `upf`
 finds `pytest upf-tests/n4.py`. The search runs once typing pauses. Results come newest first
 under their day, each with the VM it happened on and the event as the timeline tells it (the
