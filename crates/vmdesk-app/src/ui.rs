@@ -3,15 +3,18 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use anyhow::Context as _;
+use chrono::{Local, Utc};
 use gpui::{
-    AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, SharedString, Window, div,
-    prelude::*, px, rgb, transparent_black,
+    AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString,
+    Window, div, prelude::*, px, rgb, transparent_black,
 };
 use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus};
+use vmdesk_db::{NoteId, SessionId};
 
 use crate::agent_view::{AgentAction, AgentView};
 use crate::backend::{Backend, Detail, Inventory, KeyProblem};
+use crate::field::TextField;
 use crate::form::AddForm;
 use crate::human::ago;
 use crate::icon::{Icon, icon};
@@ -19,7 +22,9 @@ use crate::kit::{
     Button, backdrop, button, callout, dot, focus_ring, icon_button, label, menu, menu_action,
     menu_disabled, menu_separator, pill, popover,
 };
+use crate::search_view::{DEBOUNCE, Search, SearchState};
 use crate::theme::{CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint};
+use crate::work_view::{card_view, present_sessions, present_work, sessions_view, sidebar_line};
 
 /// How often the list re-reads the database (the monitor writes status there).
 const RELOAD: Duration = Duration::from_secs(5);
@@ -30,8 +35,23 @@ const SIDEBAR_WIDTH: f32 = 280.;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Overview,
+    Sessions,
     Timeline,
 }
+
+/// The one inline text field open in the detail pane. Enter saves it, Esc closes it.
+enum Inline {
+    /// A note for the latest work session, from the current-work card.
+    Note(Entity<TextField>),
+    /// A new title for a session, in the Sessions tab.
+    Rename {
+        session: SessionId,
+        field: Entity<TextField>,
+    },
+}
+
+/// A change to a VM's notes or sessions, with the message to show once it is done.
+type WorkChange = std::pin::Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>>>>;
 
 /// A removal waiting for the user to confirm it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,10 +65,15 @@ pub struct AppView {
     focus: FocusHandle,
     vms: Vec<Vm>,
     status: HashMap<VmId, VmStatus>,
+    /// Each VM's current-work line, for the list.
+    work: HashMap<VmId, String>,
     filter: String,
     selected: Option<VmId>,
     detail: Option<Detail>,
     tab: Tab,
+    inline: Option<Inline>,
+    /// The event search, while it is open in place of the selected VM.
+    search: Option<Search>,
     /// When the selected VM was last collected by this window.
     collected_at: Option<Instant>,
     busy: Option<&'static str>,
@@ -71,10 +96,13 @@ impl AppView {
             focus: cx.focus_handle(),
             vms: Vec::new(),
             status: HashMap::new(),
+            work: HashMap::new(),
             filter: String::new(),
             selected: None,
             detail: None,
             tab: Tab::Overview,
+            inline: None,
+            search: None,
             collected_at: None,
             busy: None,
             message: None,
@@ -130,6 +158,7 @@ impl AppView {
             Ok(inv)
                 if inv.vms == self.vms
                     && inv.status == self.status
+                    && inv.work == self.work
                     && self.pending_select.is_none() =>
             {
                 return;
@@ -137,6 +166,7 @@ impl AppView {
             Ok(inv) => {
                 self.vms = inv.vms;
                 self.status = inv.status;
+                self.work = inv.work;
                 if let Some(want) = self.pending_select.take() {
                     match find_vm(&self.vms, &want) {
                         Some(id) => self.select(id, cx),
@@ -176,6 +206,7 @@ impl AppView {
         }
         self.selected = Some(id);
         self.detail = None;
+        self.inline = None;
         self.key_prompt = None;
         self.confirm = None;
         self.menu_open = false;
@@ -294,6 +325,24 @@ impl AppView {
             cx.notify();
             return;
         }
+        if ks.modifiers.control && ks.key == "k" {
+            self.open_search(window, cx);
+            return;
+        }
+        if self.inline.is_some() {
+            match ks.key.as_str() {
+                "enter" => self.save_inline(window, cx),
+                "escape" => self.cancel_inline(window, cx),
+                _ => {}
+            }
+            return;
+        }
+        if self.search.is_some() {
+            if ks.key == "escape" {
+                self.close_search(window, cx);
+            }
+            return;
+        }
         if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform {
             return;
         }
@@ -389,6 +438,178 @@ impl AppView {
         let form = AddForm::new(cx);
         window.focus(&form.first_field(cx), cx);
         self.add = Some(form);
+        self.search = None;
+        cx.notify();
+    }
+
+    fn open_inline(&mut self, inline: Inline, window: &mut Window, cx: &mut Context<Self>) {
+        let (Inline::Note(field) | Inline::Rename { field, .. }) = &inline;
+        window.focus(&field.read(cx).focus_handle().clone(), cx);
+        self.inline = Some(inline);
+        cx.notify();
+    }
+
+    /// Opens the note field on the current-work card.
+    pub(crate) fn start_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let field = cx.new(|cx| TextField::new("What are you in the middle of?", false, cx));
+        self.open_inline(Inline::Note(field), window, cx);
+    }
+
+    /// Turns a session's title into a field holding it.
+    pub(crate) fn start_rename(
+        &mut self,
+        session: SessionId,
+        title: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let field = cx.new(|cx| {
+            TextField::new("Name this session", false, cx).with_text(title.unwrap_or_default())
+        });
+        self.open_inline(Inline::Rename { session, field }, window, cx);
+    }
+
+    fn cancel_inline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.inline = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Saves the inline field: the note goes to the latest session, as `vmdesk note`
+    /// does; an empty title clears the session's title.
+    fn save_inline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(vm), Some(inline)) = (self.selected, self.inline.take()) else {
+            return;
+        };
+        let job: WorkChange = match &inline {
+            Inline::Note(field) => {
+                let body = field.read(cx).text().trim().to_owned();
+                if body.is_empty() {
+                    self.inline = Some(inline);
+                    return;
+                }
+                let name = self
+                    .vms
+                    .iter()
+                    .find(|v| v.id == vm)
+                    .map(|v| v.name.clone())
+                    .unwrap_or_default();
+                let add = self.backend.add_note(vm, body);
+                Box::pin(async move {
+                    let note = add.await.context("adding the note")?;
+                    Ok(note.session.is_none().then(|| {
+                        format!(
+                            "Noted. {name} has no work session yet; the note is under Sessions."
+                        )
+                    }))
+                })
+            }
+            Inline::Rename { session, field } => {
+                let rename = self
+                    .backend
+                    .rename_session(*session, field.read(cx).text().to_owned());
+                Box::pin(async move {
+                    rename.await.context("renaming the session")?;
+                    Ok(None)
+                })
+            }
+        };
+        window.focus(&self.focus, cx);
+        Self::after(vm, job, cx);
+    }
+
+    pub(crate) fn delete_note(&mut self, id: NoteId, cx: &mut Context<Self>) {
+        let Some(vm) = self.selected else { return };
+        let delete = self.backend.delete_note(id);
+        Self::after(
+            vm,
+            Box::pin(async move {
+                delete.await.context("deleting the note")?;
+                Ok(None)
+            }),
+            cx,
+        );
+    }
+
+    /// Runs a change to `vm`'s work record, shows its message or error, and reloads the
+    /// VM's detail.
+    fn after(vm: VmId, job: WorkChange, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let res = job.await;
+            this.update(cx, |v, cx| {
+                match res {
+                    Ok(Some(m)) => v.message = Some((m, false)),
+                    Ok(None) => {}
+                    Err(e) => v.message = Some((format!("{e:#}"), true)),
+                }
+                if v.selected == Some(vm) {
+                    v.load_detail(vm, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Opens the event search, or moves the focus back into it.
+    fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let search = self.search.get_or_insert_with(|| Search::new(cx));
+        let focus = search.field.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+        self.inline = None;
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// The query changed: search for it once typing pauses for [`DEBOUNCE`].
+    pub(crate) fn search_edited(&mut self, cx: &mut Context<Self>) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        let query = search.field.read(cx).text().trim().to_owned();
+        if !query.chars().any(char::is_alphanumeric) {
+            search.pending = None;
+            search.state = SearchState::Idle;
+            cx.notify();
+            return;
+        }
+        search.pending = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DEBOUNCE).await;
+            let Ok(found) = this.update(cx, |v, cx| {
+                if let Some(s) = v.search.as_mut() {
+                    s.state = SearchState::Searching {
+                        query: query.clone(),
+                    };
+                }
+                cx.notify();
+                v.backend.search(query.clone())
+            }) else {
+                return;
+            };
+            let found = found.await;
+            this.update(cx, |v, cx| {
+                if let Some(s) = v.search.as_mut() {
+                    s.state = SearchState::answered(query, found, Local::now());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Shows a search hit: its VM, on the Timeline tab.
+    pub(crate) fn open_hit(&mut self, vm: VmId, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_search(window, cx);
+        self.select(vm, cx);
+        self.tab = Tab::Timeline;
         cx.notify();
     }
 
@@ -779,6 +1000,52 @@ impl AppView {
                     })
                     .children(vms.into_iter().map(|vm| self.list_row(vm, cx))),
             )
+            .child(self.search_entry(cx))
+    }
+
+    /// The way into the event search, at the foot of the list.
+    fn search_entry(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let open = self.search.is_some();
+        div()
+            .p(space::S)
+            .border_t_1()
+            .border_color(rgb(color::BORDER))
+            .child(
+                div()
+                    .id("open-search")
+                    .debug_selector(|| "open-search".to_owned())
+                    .h(CONTROL_HEIGHT)
+                    .px(space::S)
+                    .flex()
+                    .items_center()
+                    .gap(space::S)
+                    .rounded(radius::M)
+                    .cursor_pointer()
+                    .text_size(text::BODY)
+                    .text_color(rgb(if open {
+                        color::TEXT
+                    } else {
+                        color::TEXT_SECONDARY
+                    }))
+                    .when(open, |d| d.bg(tint(color::ACCENT)))
+                    .when(!open, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx)))
+                    .child(icon(Icon::Search, px(14.), color::TEXT_MUTED))
+                    .child(div().flex_1().child("Search events"))
+                    .child(
+                        div()
+                            .px(px(6.))
+                            .h(px(18.))
+                            .flex()
+                            .items_center()
+                            .rounded(radius::S)
+                            .border_1()
+                            .border_color(rgb(color::BORDER_STRONG))
+                            .text_size(text::SMALL)
+                            .text_color(rgb(color::TEXT_MUTED))
+                            .child("Ctrl K"),
+                    ),
+            )
     }
 
     /// The filter as an input. Typing anywhere in the window edits it.
@@ -802,7 +1069,7 @@ impl AppView {
             .when(active, |d| d.shadow(focus_ring()))
             .bg(rgb(color::BG))
             .cursor_text()
-            .on_click(cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
+            .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx)))
             .child(icon(Icon::Search, px(14.), color::TEXT_MUTED))
             .child(if active {
                 div()
@@ -867,7 +1134,10 @@ impl AppView {
             .cursor_pointer()
             .when(selected, |d| d.bg(tint(color::ACCENT)))
             .when(!selected, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
-            .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.close_search(window, cx);
+                this.select(id, cx);
+            }))
             .child(dot(headline_tone(self.headline(vm)).color(), 8.).mt(px(6.)))
             .child(
                 div()
@@ -896,7 +1166,10 @@ impl AppView {
                             .text_ellipsis()
                             .when(selected, |d| d.text_color(rgb(color::TEXT_SECONDARY)))
                             .debug_selector(|| format!("{}: {sub}", vm.name)),
-                    ),
+                    )
+                    .when_some(self.work.get(&id), |d, line| {
+                        d.child(sidebar_line(&vm.name, line))
+                    }),
             )
     }
 
@@ -908,6 +1181,16 @@ impl AppView {
                 .h_full()
                 .overflow_y_scroll()
                 .child(crate::form::render(form, &self.vms, cx))
+                .into_any_element();
+        }
+        if let Some(search) = &self.search {
+            return div()
+                .id("search-pane")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .child(crate::search_view::render(search, cx))
                 .into_any_element();
         }
         let Some(vm) = self
@@ -934,17 +1217,34 @@ impl AppView {
 
         let body = match (&self.detail, self.tab) {
             (None, _) => div().child(label("Loading…")).into_any_element(),
-            (Some(d), Tab::Overview) => match &d.snapshot {
-                Some(s) => crate::overview::render(s).into_any_element(),
-                None => div()
-                    .pt(space::XL)
+            (Some(d), Tab::Overview) => {
+                let work = present_work(d.work.as_ref(), &d.sessions, &d.notes, Local::now());
+                let adding = match &self.inline {
+                    Some(Inline::Note(field)) => Some(field),
+                    _ => None,
+                };
+                div()
                     .flex()
-                    .justify_center()
-                    .child(label(
-                        "No snapshot yet. Refresh collects one once the VM is reachable.",
-                    ))
-                    .into_any_element(),
-            },
+                    .flex_col()
+                    .gap(space::L)
+                    .child(card_view(&work, adding, cx))
+                    .when_some(d.snapshot.as_ref(), |el, s| {
+                        el.child(crate::overview::render(s))
+                    })
+                    .into_any_element()
+            }
+            (Some(d), Tab::Sessions) => {
+                let renaming = match &self.inline {
+                    Some(Inline::Rename { session, field }) => Some((*session, field)),
+                    _ => None,
+                };
+                sessions_view(
+                    &present_sessions(&d.sessions, &d.notes, Local::now()),
+                    renaming,
+                    cx,
+                )
+                .into_any_element()
+            }
             (Some(d), Tab::Timeline) => crate::timeline_view::render(
                 &crate::timeline_view::present(&d.timeline, chrono::Local::now()),
             )
@@ -1234,6 +1534,7 @@ impl AppView {
                     .flex()
                     .gap(space::XL)
                     .child(self.tab_button("tab-overview", "Overview", Tab::Overview, cx))
+                    .child(self.tab_button("tab-sessions", "Sessions", Tab::Sessions, cx))
                     .child(self.tab_button("tab-timeline", "Timeline", Tab::Timeline, cx)),
             )
     }
@@ -1269,6 +1570,7 @@ impl AppView {
             .hover(|s| s.text_color(rgb(color::TEXT)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.tab = tab;
+                this.inline = None;
                 cx.notify();
             }))
             .child(content)
