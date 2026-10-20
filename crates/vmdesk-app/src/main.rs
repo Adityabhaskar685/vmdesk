@@ -62,7 +62,8 @@ fn main() -> anyhow::Result<()> {
         .with_context(|| format!("opening {}", db_path.display()))?;
     // `vmdesk-app <vm>` opens with that VM (name, alias or id) selected.
     let open_vm = std::env::args().nth(1);
-    let backend = Backend::new(rt.handle().clone(), db, dir);
+    let mut backend = Backend::new(rt.handle().clone(), db, dir);
+    backend.background = std::env::var_os("VMDESK_NO_BACKGROUND").is_none();
     backend.start_background();
 
     gpui_platform::application().run(move |cx: &mut App| {

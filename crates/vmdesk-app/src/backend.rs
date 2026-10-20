@@ -34,6 +34,9 @@ pub struct Backend {
     rt: Handle,
     pub db: Db,
     pub data_dir: PathBuf,
+    /// Whether the app connects to VMs on its own (checks, polls, refreshing the open
+    /// VM). Off with `VMDESK_NO_BACKGROUND`, for demos of a database of fictional VMs.
+    pub background: bool,
 }
 
 /// What the VM list needs, loaded in one go.
@@ -102,7 +105,12 @@ pub struct Detail {
 
 impl Backend {
     pub fn new(rt: Handle, db: Db, data_dir: PathBuf) -> Self {
-        Self { rt, db, data_dir }
+        Self {
+            rt,
+            db,
+            data_dir,
+            background: true,
+        }
     }
 
     /// Runs `fut` on tokio; the returned future can be awaited from any executor.
@@ -117,6 +125,9 @@ impl Backend {
 
     /// Starts the reachability monitor and the snapshot poller for the app's lifetime.
     pub fn start_background(&self) {
+        if !self.background {
+            return;
+        }
         let db = self.db.clone();
         self.rt.spawn(async move {
             if let Err(e) = Monitor::new(db).run(|_| {}).await {

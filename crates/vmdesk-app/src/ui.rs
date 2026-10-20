@@ -203,7 +203,7 @@ impl AppView {
         let due = self
             .collected_at
             .is_none_or(|t| t.elapsed() >= OPEN_VM_INTERVAL);
-        if online && due && self.busy.is_none() {
+        if online && due && self.busy.is_none() && self.backend.background {
             self.collect(id, cx);
         }
     }
