@@ -1,4 +1,4 @@
-//! `vmdesk`: the laptop daemon and CLI.
+//! `vmdesk`: the command-line interface.
 
 mod agent;
 mod askpass;
@@ -8,18 +8,12 @@ mod status;
 mod work;
 
 use std::collections::HashMap;
-use std::io::Write;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
-use actix_web::{App, HttpServer, web};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
-use vmdesk_api::AppState;
 use vmdesk_core::{CredentialRef, EndpointKind, Hop, Provider, Vm};
 use vmdesk_db::{Db, EndpointInput, ListFilter, NewVm, SyncReport, VmPatch};
 use vmdesk_providers::SshConfigProvider;
@@ -61,12 +55,7 @@ struct AddArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the local API and UI server.
-    Serve {
-        #[arg(long, default_value = "127.0.0.1:7878")]
-        listen: SocketAddr,
-    },
-    /// Import hosts from an SSH config file (defaut `~/.ssh/config`).
+    /// Import hosts from an SSH config file (default `~/.ssh/config`).
     Import {
         #[arg(long, value_name = "PATH")]
         ssh_config: Option<PathBuf>,
@@ -245,7 +234,6 @@ fn main() -> anyhow::Result<ExitCode> {
         .build()?;
     rt.block_on(async move {
         match cli.cmd {
-            Cmd::Serve { listen } => serve(&data_dir, listen).await?,
             Cmd::Import {
                 ssh_config,
                 dry_run,
@@ -318,72 +306,6 @@ async fn open_db(data_dir: &Path) -> anyhow::Result<Db> {
         .with_context(|| format!("opening {}", path.display()))
 }
 
-async fn serve(data_dir: &Path, listen: SocketAddr) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        listen.ip().is_loopback(),
-        "refusing to listen on a non-loopback address"
-    );
-    let db = open_db(data_dir).await?;
-    let token_path = data_dir.join("api-token");
-    let token: Arc<str> = load_or_create_token(&token_path)?.into();
-    let monitor = vmdesk_reach::Monitor::new(db.clone());
-    tokio::spawn(async move {
-        let logged = monitor
-            .run(|c| {
-                tracing::info!(
-                    vm = %c.vm.name,
-                    state = %status::state_label(&c.vm, Some(&c.status)),
-                    ssh = %c.status.ssh,
-                    "status changed"
-                );
-            })
-            .await;
-        if let Err(e) = logged {
-            tracing::error!(error = %e, "reachability monitor stopped");
-        }
-    });
-    let poll_db = db.clone();
-    tokio::spawn(async move {
-        if let Err(e) = vmdesk_collect::remote::poll_forever(&poll_db).await {
-            tracing::error!(error = %e, "snapshot poller stopped");
-        }
-    });
-    let state = web::Data::new(AppState { db, token });
-    tracing::info!(%listen, token_file = %token_path.display(), "vmdesk serving");
-    HttpServer::new(move || {
-        App::new()
-            .app_data(state.clone())
-            .configure(vmdesk_api::configure)
-    })
-    .bind(listen)?
-    .run()
-    .await?;
-    Ok(())
-}
-
-/// Reads the API token, creating a random one on the first run.
-fn load_or_create_token(path: &Path) -> anyhow::Result<String> {
-    match std::fs::read_to_string(path) {
-        Ok(t) if !t.trim().is_empty() => return Ok(t.trim().to_owned()),
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    }
-    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut file = opts
-        .open(path)
-        .with_context(|| format!("creating {}", path.display()))?;
-    file.write_all(token.as_bytes())?;
-    Ok(token)
-}
-
 async fn import(data_dir: &Path, path: Option<PathBuf>, dry_run: bool) -> anyhow::Result<()> {
     if dry_run {
         let path = path
@@ -400,9 +322,7 @@ async fn import(data_dir: &Path, path: Option<PathBuf>, dry_run: bool) -> anyhow
                     .map(|e| format!("{}:{}", e.address, e.port));
                 [
                     p.name.clone(),
-                    p.username
-                        .clone()
-                        .unwrap_or_else(vmdesk_api::local_username),
+                    p.username.clone().unwrap_or_else(local_username),
                     ep.unwrap_or_default(),
                     p.jump_via.join(" -> "),
                 ]
@@ -413,7 +333,7 @@ async fn import(data_dir: &Path, path: Option<PathBuf>, dry_run: bool) -> anyhow
         return Ok(());
     }
     let db = open_db(data_dir).await?;
-    let report = vmdesk_api::import_ssh_config(&db, path).await?;
+    let report = import_ssh_config(&db, path).await?;
     print_report(&report);
     Ok(())
 }
@@ -494,7 +414,7 @@ async fn add(db: &Db, args: AddArgs) -> anyhow::Result<()> {
     let vm = db
         .create_vm(NewVm {
             name: args.name,
-            username: args.user.unwrap_or_else(vmdesk_api::local_username),
+            username: args.user.unwrap_or_else(local_username),
             credential,
             endpoints: vec![EndpointInput {
                 address: args.address,
@@ -640,6 +560,28 @@ pub(crate) fn print_table<const N: usize>(headers: &[&str; N], rows: &[[String; 
     }
 }
 
+/// Imports `path` (default `~/.ssh/config`) into the inventory.
+async fn import_ssh_config(db: &Db, path: Option<PathBuf>) -> anyhow::Result<SyncReport> {
+    let path = path
+        .or_else(SshConfigProvider::default_path)
+        .context("no home directory; pass a path")?;
+    let provider = SshConfigProvider::new(path);
+    let listing = provider
+        .list()
+        .await
+        .with_context(|| format!("reading {}", provider.path().display()))?;
+    Ok(db
+        .sync_provider(provider.id(), listing, &local_username())
+        .await?)
+}
+
+/// The local login name, which `ssh` uses when a host has no `User`.
+fn local_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "root".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,22 +590,5 @@ mod tests {
     #[test]
     fn cli_is_valid() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn token_created_once_with_private_permissions() {
-        let dir = std::env::temp_dir().join(format!("vmdesk-token-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("api-token");
-        let first = load_or_create_token(&path).unwrap();
-        assert_eq!(first.len(), 64);
-        assert_eq!(load_or_create_token(&path).unwrap(), first);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        std::fs::remove_dir_all(dir).ok();
     }
 }

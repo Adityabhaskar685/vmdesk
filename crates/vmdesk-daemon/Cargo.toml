@@ -1,6 +1,6 @@
 [package]
 name = "vmdesk-daemon"
-description = "Laptop binary: `vmdesk serve | proxy | import`"
+description = "Laptop binary: the `vmdesk` CLI"
 version.workspace = true
 edition.workspace = true
 
@@ -18,21 +18,17 @@ azure     = ["vmdesk-providers/azure"]
 [dependencies]
 vmdesk-core.workspace = true
 vmdesk-proto.workspace = true
-serde_json.workspace = true
 vmdesk-db.workspace = true
 vmdesk-transport.workspace = true
 vmdesk-reach.workspace = true
 vmdesk-collect = { workspace = true, features = ["remote"] }
 vmdesk-providers.workspace = true
-vmdesk-api.workspace = true
-actix-web.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util"] }
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dirs.workspace = true
-uuid = {workspace = true, features = ["v4"]}
 rpassword = "7"
 chrono = { workspace = true, features = ["clock"] }
 

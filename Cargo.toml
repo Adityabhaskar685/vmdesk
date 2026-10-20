@@ -8,7 +8,6 @@ members = [
     "crates/vmdesk-reach",
     "crates/vmdesk-collect",
     "crates/vmdesk-providers",
-    "crates/vmdesk-api",
     "crates/vmdesk-daemon",
     "crates/vmdesk-app",
     "crates/vmdesk-agent",
@@ -29,7 +28,6 @@ vmdesk-transport   = { path = "crates/vmdesk-transport" }
 vmdesk-reach       = { path = "crates/vmdesk-reach" }
 vmdesk-collect     = { path = "crates/vmdesk-collect", default-features = false}
 vmdesk-providers   = { path = "crates/vmdesk-providers" }
-vmdesk-api         = { path = "crates/vmdesk-api" }
 
 
 # async / runtime
@@ -65,9 +63,6 @@ russh-sftp = "3"
 gpui          = { git = "https://github.com/zed-industries/zed", tag = "v1.24.2" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.24.2" }
 
-# web
-actix-web   = "4"
-actix-ws    = "0.3"
 
 # networking / platform
 netdev      = "0.46"
