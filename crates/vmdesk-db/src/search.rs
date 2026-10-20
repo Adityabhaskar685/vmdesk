@@ -201,7 +201,7 @@ mod tests {
         )
         .await
         .unwrap();
-        db.set_agent_state(vm, vmdesk_core::AgentState::Ok)
+        db.set_agent_state(vm, vmdesk_core::AgentState::Ok, None)
             .await
             .unwrap();
         assert_eq!(found(&db, "pytest").await.len(), 3);

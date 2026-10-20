@@ -62,8 +62,9 @@ The list on the left shows every VM with a status dot (green online, amber SSH f
 route, grey not checked), the interface that reaches it, and what you were doing there. Type to
 filter the list, use ↑/↓ to move, and press Esc to clear the filter.
 
-The selected VM has a status pill (`Online + agent`, `SSH failing`, and so on), the agent's state,
-and three tabs:
+The selected VM has a status pill (`Online + agent`, `SSH failing`, and so on), the agent's state
+(with why its last sync failed, when it did; `vmdesk status` and `vmdesk agent status` say it
+too), and three tabs:
 
 - **Overview** starts with **Current work**: the command or tmux session you were using, its repo
   and branch with uncommitted changes, and since when. Your newest note on the session sits above

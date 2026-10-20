@@ -786,13 +786,12 @@ impl AppView {
     }
 
     fn agent_view(&self, id: VmId) -> Option<AgentView> {
-        let state = self
-            .status
-            .get(&id)
-            .map_or(AgentState::Unknown, |s| s.agent);
+        let status = self.status.get(&id);
+        let state = status.map_or(AgentState::Unknown, |s| s.agent);
+        let reason = status.and_then(|s| s.agent_detail.as_deref());
         self.detail
             .as_ref()
-            .map(|d| AgentView::new(d.agent.as_ref(), state))
+            .map(|d| AgentView::new(d.agent.as_ref(), state, reason))
     }
 }
 
@@ -1535,6 +1534,17 @@ impl AppView {
                         .text_color(rgb(color::AMBER))
                         .child(detail),
                 )
+            })
+            .when_some(self.agent_view(id), |d, agent| {
+                d.when_some(agent.detail(), |d, why| {
+                    d.child(
+                        div()
+                            .debug_selector(|| format!("agent-detail: {why}"))
+                            .text_size(text::META)
+                            .text_color(rgb(tone_color(agent.tone())))
+                            .child(why),
+                    )
+                })
             })
             .when_some(self.message.clone(), |d, (m, err)| {
                 d.child(

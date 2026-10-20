@@ -70,6 +70,8 @@ pub struct VmStatus {
     pub checked_at: DateTime<Utc>,
     /// Why the SSH check failed, when it did.
     pub detail: Option<String>,
+    /// Why the last agent sync failed, when it did. Agent syncs own it, as `agent`.
+    pub agent_detail: Option<String>,
 }
 
 impl VmStatus {
@@ -166,6 +168,7 @@ mod tests {
             agent: AgentState::Unknown,
             checked_at: Utc::now(),
             detail: None,
+            agent_detail: None,
         }
     }
 

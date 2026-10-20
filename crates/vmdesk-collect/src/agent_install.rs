@@ -115,7 +115,7 @@ pub async fn uninstall(db: &Db, session: &dyn RemoteExec, vm: VmId) -> Result<()
     )
     .await?;
     db.delete_agent(vm).await.map_err(db_err)?;
-    db.set_agent_state(vm, AgentState::Absent)
+    db.set_agent_state(vm, AgentState::Absent, None)
         .await
         .map_err(db_err)?;
     Ok(())

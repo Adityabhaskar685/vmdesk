@@ -9,7 +9,7 @@ use vmdesk_collect::agent_install;
 use vmdesk_core::{AgentState, Vm};
 use vmdesk_db::{AgentRecord, Db, ListFilter};
 
-use crate::status::short;
+use crate::status::{details, short};
 use crate::{print_table, remote};
 
 #[derive(Subcommand)]
@@ -136,14 +136,22 @@ async fn status(db: &Db, names: &[String], accept_new_host_keys: bool) -> anyhow
     let t = remote::transport(db, accept_new_host_keys);
     let mut rows = Vec::new();
     for vm in &targets {
-        let (state, detail) = match t.session(vm, &inventory).await {
-            Ok(session) => match agent::sync(db, session.as_ref(), vm.id).await {
-                Ok(probe) => (probe.state(), outcome(vm, &probe)),
-                Err(e) => (AgentState::Unknown, e.to_string()),
-            },
-            Err(e) => (AgentState::Unknown, e.to_string()),
+        let synced = match t.session(vm, &inventory).await {
+            Ok(session) => agent::sync(db, session.as_ref(), vm.id).await,
+            Err(e) => Err(e),
         };
-        rows.push(row(vm, state, db.agent(vm.id).await?.as_ref(), &detail));
+        let (state, detail) = match synced {
+            Ok(probe) => (probe.state(), short(&outcome(vm, &probe))),
+            Err(e) => {
+                let last = db.get_status(vm.id).await?.and_then(|s| s.agent_detail);
+                let last = last.map(|l| format!("the last sync failed: {l}"));
+                (
+                    AgentState::Unknown,
+                    details([e.to_string()].into_iter().chain(last)),
+                )
+            }
+        };
+        rows.push(row(vm, state, db.agent(vm.id).await?.as_ref(), detail));
     }
     t.close_all().await;
     print_table(
@@ -160,7 +168,7 @@ async fn status(db: &Db, names: &[String], accept_new_host_keys: bool) -> anyhow
     Ok(())
 }
 
-fn row(vm: &Vm, state: AgentState, agent: Option<&AgentRecord>, detail: &str) -> [String; 6] {
+fn row(vm: &Vm, state: AgentState, agent: Option<&AgentRecord>, detail: String) -> [String; 6] {
     let contact = agent.and_then(|a| a.last_contact_at).map_or_else(
         || "never".to_owned(),
         |t| {
@@ -176,7 +184,7 @@ fn row(vm: &Vm, state: AgentState, agent: Option<&AgentRecord>, detail: &str) ->
         agent.map(|a| a.version.clone()).unwrap_or_default(),
         agent.map(|a| a.last_seq.to_string()).unwrap_or_default(),
         contact,
-        short(detail),
+        detail,
     ]
 }
 

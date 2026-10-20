@@ -39,7 +39,7 @@ pub async fn status(db: &Db, names: &[String], watch: bool) -> anyhow::Result<()
                 state_label(&c.vm, Some(&c.status)),
                 c.status.ssh.to_string(),
                 c.status.agent.to_string(),
-                c.status.detail.as_deref().map(short).unwrap_or_default(),
+                detail(&c.status),
             ]
         })
         .collect();
@@ -70,6 +70,18 @@ pub async fn status(db: &Db, names: &[String], watch: bool) -> anyhow::Result<()
         })
         .await?;
     Ok(())
+}
+
+/// Why SSH failed, then why the last agent sync failed.
+fn detail(s: &VmStatus) -> String {
+    let agent = s.agent_detail.as_ref().map(|d| format!("agent: {d}"));
+    details(s.detail.clone().into_iter().chain(agent))
+}
+
+/// Each part [`short`], joined with `; `.
+pub(crate) fn details(parts: impl IntoIterator<Item = String>) -> String {
+    let parts: Vec<String> = parts.into_iter().map(|p| short(&p)).collect();
+    parts.join("; ")
 }
 
 pub(crate) fn short(detail: &str) -> String {

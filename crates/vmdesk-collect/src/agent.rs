@@ -62,6 +62,15 @@ impl AgentProbe {
             Self::Error(_) => AgentState::Error,
         }
     }
+
+    /// Why the sync failed, when it did.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Error(why) => Some(why),
+            _ => None,
+        }
+    }
 }
 
 /// Syncs with the VM's agent and records the resulting agent state in its status.
@@ -79,7 +88,7 @@ pub async fn sync(db: &Db, session: &dyn RemoteExec, vm: VmId) -> Result<AgentPr
         }
         None => AgentProbe::Absent,
     };
-    db.set_agent_state(vm, probe.state())
+    db.set_agent_state(vm, probe.state(), probe.detail())
         .await
         .map_err(db_err)?;
     Ok(probe)
@@ -538,12 +547,18 @@ mod tests {
             panic!("a newer protocol is an error");
         };
         assert!(e.contains("protocol 2"), "{e}");
-        assert_eq!(agent_state(&db, vm.id).await, AgentState::Error);
+        let stored = db.get_status(vm.id).await.unwrap().unwrap();
+        assert_eq!(
+            (stored.agent, stored.agent_detail.as_deref()),
+            (AgentState::Error, Some(e.as_str())),
+            "the status keeps why"
+        );
         assert!(db.agent(vm.id).await.unwrap().is_none());
 
         fake.agent().as_mut().unwrap().proto = PROTO_VERSION - 1;
         synced(sync(&db, &fake, vm.id).await.unwrap());
-        assert_eq!(agent_state(&db, vm.id).await, AgentState::Ok);
+        let stored = db.get_status(vm.id).await.unwrap().unwrap();
+        assert_eq!((stored.agent, stored.agent_detail), (AgentState::Ok, None));
     }
 
     #[tokio::test]

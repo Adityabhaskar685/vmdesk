@@ -144,10 +144,15 @@ pub(crate) mod tests {
                             agent: AgentState::Unknown,
                             checked_at: chrono::Utc::now(),
                             detail: None,
+                            agent_detail: None,
                         })
                         .await?;
-                        db.set_agent_state(vm, [AgentState::Ok, AgentState::NotRunning][i % 2])
-                            .await?;
+                        db.set_agent_state(
+                            vm,
+                            [AgentState::Ok, AgentState::NotRunning][i % 2],
+                            None,
+                        )
+                        .await?;
                         db.add_note(vm, None, "note").await?;
                     }
                     Ok::<_, Error>(())

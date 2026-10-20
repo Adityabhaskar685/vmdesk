@@ -116,6 +116,7 @@ async fn status(
         agent: AgentState::Unknown,
         checked_at: now - Duration::seconds(12),
         detail: detail.map(str::to_owned),
+        agent_detail: None,
     })
     .await?;
     Ok(())
@@ -287,7 +288,7 @@ async fn build_01(db: &Db, vm: VmId, now: DateTime<Utc>) -> Result<(), vmdesk_db
         None,
     )
     .await?;
-    db.set_agent_state(vm, AgentState::Ok).await?;
+    db.set_agent_state(vm, AgentState::Ok, None).await?;
 
     let yesterday = now - Duration::days(1);
     let kinds = vec![

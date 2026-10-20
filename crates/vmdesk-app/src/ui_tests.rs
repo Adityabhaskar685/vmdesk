@@ -56,6 +56,7 @@ fn seed_vm(env: &Env, agent: AgentState, version: Option<&str>) -> VmId {
             agent,
             checked_at: Utc::now(),
             detail: None,
+            agent_detail: None,
         })
         .await
         .unwrap();
@@ -381,6 +382,30 @@ fn an_outdated_agent_offers_an_upgrade(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn an_agent_that_does_not_answer_says_why(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Ok, Some("0.1.0"));
+    let why = "unexpected output from the agent (expected value at line 1 column 1): \"Welcome\"";
+    env.rt
+        .block_on(
+            env.backend
+                .db
+                .set_agent_state(vm, AgentState::Error, Some(why)),
+        )
+        .unwrap();
+    let (_view, cx) = open_lab(cx, &env);
+
+    assert!(shown(
+        cx,
+        "agent: Agent not answering properly · collecting over SSH"
+    ));
+    assert!(shown(
+        cx,
+        dynamic(format!("agent-detail: Agent sync failed: {why}"))
+    ));
+}
+
+#[gpui::test]
 fn the_more_menu_opens_and_closes(cx: &mut TestAppContext) {
     let env = env();
     seed_vm(&env, AgentState::Unknown, None);
@@ -442,7 +467,7 @@ fn the_timeline_reads_as_sentences_under_day_headers(cx: &mut TestAppContext) {
     let from = Utc::now() - chrono::Duration::days(1);
     let to = from + chrono::Duration::minutes(5 * 60 + 32);
     env.rt.block_on(async {
-        db.set_agent_state(vm, AgentState::Ok).await.unwrap();
+        db.set_agent_state(vm, AgentState::Ok, None).await.unwrap();
         let snapshot = vmdesk_proto::Snapshot {
             taken_at: Some(Utc::now()),
             ..vmdesk_proto::Snapshot::default()

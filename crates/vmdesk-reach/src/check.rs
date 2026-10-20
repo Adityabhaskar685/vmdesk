@@ -25,7 +25,8 @@ pub enum Probe {
 const BANNER_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Checks one VM. `inventory` must hold its jump hosts; `previous` is its last status.
-/// The agent state is carried over from `previous`: agent syncs own it.
+/// The agent state and its detail are carried over from `previous`: agent syncs own
+/// them.
 #[allow(clippy::implicit_hasher)] // matches `Transport::session`, which takes the default map
 pub async fn check(
     vm: &Vm,
@@ -42,6 +43,7 @@ pub async fn check(
         agent: previous.map_or(AgentState::Unknown, |p| p.agent),
         checked_at: Utc::now(),
         detail: None,
+        agent_detail: previous.and_then(|p| p.agent_detail.clone()),
     };
     if matches!(vm.lifecycle, Lifecycle::Stopped | Lifecycle::Terminated) {
         status.detail = Some(format!("provider reports {}", vm.lifecycle.as_str()));

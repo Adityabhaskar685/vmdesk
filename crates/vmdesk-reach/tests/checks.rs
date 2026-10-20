@@ -193,6 +193,7 @@ async fn port_probe_keeps_the_previous_login_result() {
         agent: AgentState::Unknown,
         checked_at: Utc::now(),
         detail: Some("authentication failed: tester@sshd: no key".into()),
+        agent_detail: None,
     };
 
     let s = check(
@@ -264,7 +265,7 @@ async fn monitor_stores_results_and_reports_changes() {
     );
 
     // The agent state found by a sync survives later checks and is no change.
-    db.set_agent_state(created.id, AgentState::Ok)
+    db.set_agent_state(created.id, AgentState::Ok, None)
         .await
         .unwrap();
     let third = monitor.check_now(None).await.unwrap();
@@ -285,9 +286,10 @@ async fn check_carries_the_previous_agent_state() {
         vm: v.id,
         route: Some("wlan0".into()),
         ssh: SshState::Ok,
-        agent: AgentState::NotRunning,
+        agent: AgentState::Error,
         checked_at: Utc::now(),
         detail: None,
+        agent_detail: Some("timed out waiting for the agent".into()),
     };
     let s = check(
         &v,
@@ -299,8 +301,12 @@ async fn check_carries_the_previous_agent_state() {
     )
     .await;
     assert_eq!(
-        (s.ssh, s.agent),
-        (SshState::Refused, AgentState::NotRunning)
+        (s.ssh, s.agent, s.agent_detail.as_deref()),
+        (
+            SshState::Refused,
+            AgentState::Error,
+            Some("timed out waiting for the agent")
+        )
     );
 
     v.lifecycle = Lifecycle::Stopped;
@@ -313,7 +319,7 @@ async fn check_carries_the_previous_agent_state() {
         Some(&previous),
     )
     .await;
-    assert_eq!(s.agent, AgentState::NotRunning);
+    assert_eq!(s.agent, AgentState::Error);
     let s = check(&v, &inv, &transport(), routes.as_ref(), Probe::Login, None).await;
-    assert_eq!(s.agent, AgentState::Unknown);
+    assert_eq!((s.agent, s.agent_detail), (AgentState::Unknown, None));
 }

@@ -74,8 +74,8 @@ pub enum AgentView {
     },
     /// Installed, but its daemon is stopped: the next poll starts it.
     NotRunning,
-    /// It did not answer properly. The reason is only in the log of the sync that failed.
-    Error,
+    /// It did not answer properly, for the reason the failed sync stored.
+    Error { reason: Option<String> },
     /// Installed; no sync has reported on it since the VM was last reached.
     Unchecked {
         version: String,
@@ -84,7 +84,8 @@ pub enum AgentView {
 }
 
 impl AgentView {
-    pub fn new(record: Option<&AgentRecord>, state: AgentState) -> Self {
+    /// `reason` is why the last sync failed, from the VM's status.
+    pub fn new(record: Option<&AgentRecord>, state: AgentState, reason: Option<&str>) -> Self {
         let Some(a) = record else {
             return Self::None;
         };
@@ -94,7 +95,9 @@ impl AgentView {
             AgentState::Ok => Self::Ok { version, synced },
             AgentState::Outdated => Self::Outdated { version, synced },
             AgentState::NotRunning => Self::NotRunning,
-            AgentState::Error => Self::Error,
+            AgentState::Error => Self::Error {
+                reason: reason.map(str::to_owned),
+            },
             AgentState::Unknown => Self::Unchecked { version, synced },
         }
     }
@@ -116,7 +119,7 @@ impl AgentView {
                 synced: at,
             } => format!("Agent {version} · outdated · {}", synced(at)),
             Self::NotRunning => "Agent not running · the next poll starts it".to_owned(),
-            Self::Error => "Agent not answering properly · collecting over SSH".to_owned(),
+            Self::Error { .. } => "Agent not answering properly · collecting over SSH".to_owned(),
             Self::Unchecked {
                 version,
                 synced: at,
@@ -128,7 +131,7 @@ impl AgentView {
         match self {
             Self::Ok { .. } => Tone::Good,
             Self::Missing | Self::Outdated { .. } | Self::NotRunning => Tone::Warn,
-            Self::Error => Tone::Bad,
+            Self::Error { .. } => Tone::Bad,
             Self::None | Self::Unchecked { .. } => Tone::Neutral,
         }
     }
@@ -137,9 +140,19 @@ impl AgentView {
         match self {
             Self::None | Self::Missing => AgentAction::Install,
             Self::Outdated { .. } => AgentAction::Upgrade,
-            Self::Ok { .. } | Self::NotRunning | Self::Error | Self::Unchecked { .. } => {
+            Self::Ok { .. } | Self::NotRunning | Self::Error { .. } | Self::Unchecked { .. } => {
                 AgentAction::Remove
             }
+        }
+    }
+
+    /// The line under the header that says why the agent is not answering.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Error {
+                reason: Some(reason),
+            } => Some(format!("Agent sync failed: {reason}")),
+            _ => None,
         }
     }
 }
@@ -205,12 +218,21 @@ mod tests {
             ),
         ];
         for (record, state, text, action) in cases {
-            let view = AgentView::new(record, state);
+            let view = AgentView::new(record, state, None);
             assert_eq!(
                 (view.text(now).as_str(), view.action()),
                 (text, action),
                 "{state}"
             );
+            assert_eq!(view.detail(), None, "{state}: no reason stored");
         }
+
+        let why = Some("timed out waiting for the agent");
+        assert_eq!(
+            AgentView::new(Some(&record), AgentState::Error, why)
+                .detail()
+                .as_deref(),
+            Some("Agent sync failed: timed out waiting for the agent")
+        );
     }
 }

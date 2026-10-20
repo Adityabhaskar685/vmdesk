@@ -448,7 +448,7 @@ fn status_changed(e: &Event) -> Text {
         _ => None,
     };
     let agent_change = match (agent(previous), agent(data)) {
-        (Some(was), Some(now)) if was != now => Some(agent_text(was, now)),
+        (Some(was), Some(now)) if was != now => Some(agent_text(was, now, e.opt("agent_detail"))),
         _ => None,
     };
     match (ssh_change, agent_change) {
@@ -495,7 +495,8 @@ fn ssh_text(was: SshState, now: SshState, route: Option<&str>, why: Option<&str>
         .tone(tone)
 }
 
-fn agent_text(was: AgentState, now: AgentState) -> Text {
+/// `why` is the reason a failed sync gave.
+fn agent_text(was: AgentState, now: AgentState, why: Option<&str>) -> Text {
     let (title, detail, tone) = match (was, now) {
         (AgentState::Unknown, AgentState::Ok) => {
             ("Agent connected and recording", None, Tone::Good)
@@ -526,6 +527,10 @@ fn agent_text(was: AgentState, now: AgentState) -> Text {
         ),
         (_, AgentState::Unknown) => ("Agent state unknown", None, Tone::Neutral),
     };
+    let detail = detail.map(|d| match why.filter(|_| now == AgentState::Error) {
+        Some(why) => format!("{why} · {d}"),
+        None => d.to_owned(),
+    });
     Text::new(vec![plain(title)])
         .detail(detail.map(|d| vec![plain(d)]))
         .tone(tone)
@@ -724,6 +729,18 @@ mod tests {
         let mut moved = status("ok", "ok", "ok", "ok", "tun0");
         moved["previous"]["route"] = json!("wlo1");
         assert_eq!(said_status(moved), "Route changed to tun0 | was wlo1");
+
+        let mut failed = status("ok", "ok", "ok", "error", "tun0");
+        assert_eq!(
+            said_status(failed.clone()),
+            "Agent not answering properly | collecting over SSH"
+        );
+        failed["agent_detail"] = json!("timed out waiting for the agent");
+        assert_eq!(
+            said_status(failed),
+            "Agent not answering properly | timed out waiting for the agent · collecting over SSH",
+            "with the reason the sync stored"
+        );
     }
 
     #[test]
