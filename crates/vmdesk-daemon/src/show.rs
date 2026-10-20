@@ -1,4 +1,5 @@
-//! `vmdesk show` (what is on a VM now) and `vmdesk timeline` (what happened there).
+//! `vmdesk show` (what you are doing on a VM and what is on it now) and `vmdesk
+//! timeline` (what happened there).
 
 use std::sync::Arc;
 
@@ -27,6 +28,13 @@ pub async fn show(db: &Db, name: &str, cached: bool) -> anyhow::Result<()> {
         t.close_all().await;
         snap
     };
+    let session = db.latest_session(vm.id).await?;
+    let notes = db.notes(vm.id).await?;
+    let work = vmdesk_collect::work::current_work(&snap, session.as_ref(), &notes);
+    if let Some(note) = &work.note {
+        println!("note: {note}");
+    }
+    println!("{}\n", work.line());
     print_snapshot(&vm.name, &snap);
     Ok(())
 }
@@ -212,6 +220,6 @@ pub async fn timeline(db: &Db, name: &str, limit: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn local(ts: DateTime<Utc>) -> String {
+pub(crate) fn local(ts: DateTime<Utc>) -> String {
     ts.with_timezone(&Local).format("%m-%d %H:%M").to_string()
 }
