@@ -7,6 +7,7 @@ mod error;
 mod snapshots;
 mod status;
 mod vms;
+mod work;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,7 +62,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .configure(vms::routes)
             .configure(status::routes)
             .configure(snapshots::routes)
-            .configure(agent::routes),
+            .configure(agent::routes)
+            .configure(work::routes),
     );
 }
 
