@@ -2,7 +2,8 @@
 //! [`theme`](crate::theme) tokens.
 
 use gpui::{
-    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, div, hsla, point, prelude::*, px, rgb,
+    App, BoxShadow, Deferred, Div, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString,
+    Stateful, Window, deferred, div, hsla, point, prelude::*, px, rgb,
 };
 
 use crate::icon::{Icon, icon};
@@ -79,7 +80,6 @@ pub fn icon_button(id: &'static str, glyph: Icon, active: bool) -> Stateful<Div>
         .child(icon(glyph, px(16.), color::TEXT))
 }
 
-/// Small muted text.
 pub fn label(content: impl Into<SharedString>) -> Div {
     div()
         .text_size(text::META)
@@ -281,13 +281,7 @@ pub fn menu_separator() -> Div {
     div().my(space::XS).h(px(1.)).bg(rgb(color::BORDER))
 }
 
-/// A menu row. A disabled one is drawn muted and has no id to click.
-pub fn menu_item(id: &'static str, content: &'static str, danger: bool, enabled: bool) -> Div {
-    let text_color = match (enabled, danger) {
-        (false, _) => color::TEXT_MUTED,
-        (true, true) => color::RED,
-        (true, false) => color::TEXT,
-    };
+fn menu_row(content: &'static str, text_color: u32) -> Div {
     div()
         .mx(space::XS)
         .h(px(30.))
@@ -298,13 +292,47 @@ pub fn menu_item(id: &'static str, content: &'static str, danger: bool, enabled:
         .text_size(text::BODY)
         .text_color(rgb(text_color))
         .child(content)
-        .when(enabled, |d| d.debug_selector(|| id.to_owned()))
 }
 
-/// The clickable version of [`menu_item`].
+/// A menu row that cannot be chosen right now.
+pub fn menu_disabled(content: &'static str) -> Div {
+    menu_row(content, color::TEXT_MUTED)
+}
+
+/// A menu row to click; `danger` for one that deletes something.
 pub fn menu_action(id: &'static str, content: &'static str, danger: bool) -> Stateful<Div> {
-    menu_item(id, content, danger, true)
+    menu_row(content, if danger { color::RED } else { color::TEXT })
         .id(id)
+        .debug_selector(|| id.to_owned())
         .cursor_pointer()
         .hover(|s| s.bg(rgb(color::HOVER)))
+}
+
+/// Deferred draw order, bottom to top.
+const BACKDROP_LAYER: usize = 0;
+const POPOVER_LAYER: usize = 1;
+
+/// `panel` drawn above the rest of the window and above [`backdrop`], where its parent
+/// places it.
+pub fn popover(panel: impl IntoElement) -> Deferred {
+    deferred(panel).with_priority(POPOVER_LAYER)
+}
+
+/// A transparent layer over the whole window, under any [`popover`]. A click on it, so
+/// outside the popover, calls `dismiss` and reaches nothing else.
+pub fn backdrop(
+    id: &'static str,
+    dismiss: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Deferred {
+    deferred(
+        div()
+            .id(id)
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, dismiss),
+    )
+    .with_priority(BACKDROP_LAYER)
 }

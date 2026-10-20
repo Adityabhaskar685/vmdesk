@@ -315,8 +315,6 @@ fn a_vm_without_an_agent_offers_to_install_one(cx: &mut TestAppContext) {
     assert!(shown(cx, "agent-install"));
     assert!(!shown(cx, "agent-remove"));
 
-    // Without a build to upload (or a VM that answers), the error is shown and the
-    // action is offered again.
     click(cx, "agent-install");
     assert!(!shown(cx, "menu"), "choosing an action closes the menu");
     wait(cx, &view, "the install to fail", |v| {
@@ -444,7 +442,6 @@ fn the_timeline_reads_as_sentences_under_day_headers(cx: &mut TestAppContext) {
     let from = Utc::now() - chrono::Duration::days(1);
     let to = from + chrono::Duration::minutes(5 * 60 + 32);
     env.rt.block_on(async {
-        // The first sync after an install: the agent's state goes from unknown to ok.
         db.set_agent_state(vm, AgentState::Ok).await.unwrap();
         let snapshot = vmdesk_proto::Snapshot {
             taken_at: Some(Utc::now()),

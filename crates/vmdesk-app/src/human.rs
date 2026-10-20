@@ -20,8 +20,7 @@ pub fn duration(secs: i64) -> String {
     }
 }
 
-/// How long ago, in its largest unit: `45s`, `12m`, `5h`, `3d`. For "checked … ago",
-/// where a second unit would only flicker.
+/// How long ago, in its largest unit: `45s`, `12m`, `5h`, `3d`.
 pub fn ago(secs: i64) -> String {
     let d = secs.max(0);
     match d {

@@ -1,5 +1,4 @@
 //! The design tokens every view draws with: colours, spacing, radii and text sizes.
-//! Views use these names, never raw literals, so the app reads as one surface.
 
 use gpui::{Pixels, Rgba, px, rgba};
 
@@ -9,7 +8,7 @@ pub mod color {
     pub const BG: u32 = 0x15171a;
     /// The sidebar and title bar.
     pub const SURFACE: u32 = 0x1b1e22;
-    /// Cards, controls and menus, one step above their background.
+    /// Buttons and menus, one step above their background.
     pub const ELEVATED: u32 = 0x22262b;
     pub const HOVER: u32 = 0x2a2f35;
     pub const BORDER: u32 = 0x2a2e34;
@@ -37,7 +36,6 @@ pub mod color {
     pub const PINK: u32 = 0xe47bb0;
 }
 
-/// Spacing scale.
 pub mod space {
     use gpui::{Pixels, px};
 
@@ -94,7 +92,6 @@ impl Tone {
     }
 }
 
-/// `c` with opacity `a` (0 to 255).
 pub fn alpha(c: u32, a: u8) -> Rgba {
     rgba((c << 8) | u32::from(a))
 }

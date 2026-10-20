@@ -91,7 +91,6 @@ pub struct Day {
 /// One stored event, with typed access to its JSON fields.
 struct Event<'a> {
     entry: &'a TimelineEntry,
-    /// When it happened, in local time.
     at: DateTime<Local>,
 }
 
@@ -366,9 +365,7 @@ fn listener_address(e: &Event) -> Line {
     ]
 }
 
-/// A span with no observations. Who missed it decides the wording: the SSH collector
-/// (`ssh`), the agent's daemon (`agent:…`), or the laptop, which records the span whose
-/// events an agent rotated out before they were synced.
+/// A span with no observations.
 fn gap(e: &Event) -> Text {
     let span = match (e.time("from"), e.time("to")) {
         (Some(from), Some(to)) => Some((from, to)),
@@ -590,7 +587,6 @@ fn same_moment(a: &Row, b: &Row) -> bool {
         && a.at.timestamp().div_euclid(60) == b.at.timestamp().div_euclid(60)
 }
 
-/// The rows as drawn: a time column, a rail of category dots, the sentence and its source.
 pub fn render(days: &[Day]) -> Div {
     if days.is_empty() {
         return div()
@@ -768,7 +764,6 @@ mod tests {
         }
     }
 
-    /// Day headers as `# Today`, rows as `title | detail`.
     fn shown(days: &[Day]) -> Vec<String> {
         days.iter()
             .flat_map(|d| {

@@ -1,5 +1,5 @@
-//! The few icons the app draws, as vector paths on a 16-unit grid. Drawn, not loaded, so
-//! they need no asset files and no font that happens to have the glyph.
+//! The few icons the app draws, as vector paths on a 16-unit grid. Paths, not font glyphs:
+//! Noto Sans has no search or ellipsis glyph.
 
 use gpui::{IntoElement, PathBuilder, Pixels, Point, Styled, canvas, point, px, rgb};
 
@@ -62,7 +62,6 @@ impl Icon {
     }
 }
 
-/// `icon` at `size`, in colour `color`.
 pub fn icon(icon: Icon, size: Pixels, color: u32) -> impl IntoElement {
     canvas(
         |_, _, _| {},

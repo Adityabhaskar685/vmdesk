@@ -8,7 +8,6 @@ use crate::human::{ago, duration};
 use crate::kit::{Col, card, col, count_badge, label, mono, table};
 use crate::theme::{color, radius, space, text};
 
-/// Cards top to bottom.
 pub fn render(s: &Snapshot) -> Div {
     let cards: Vec<AnyElement> = vec![
         system_card(s).into_any_element(),

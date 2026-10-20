@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use gpui::{
-    AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString, Window,
-    deferred, div, prelude::*, px, rgb, transparent_black,
+    AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, SharedString, Window, div,
+    prelude::*, px, rgb, transparent_black,
 };
 use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus};
 
@@ -16,8 +16,8 @@ use crate::form::AddForm;
 use crate::human::ago;
 use crate::icon::{Icon, icon};
 use crate::kit::{
-    Button, button, callout, dot, focus_ring, icon_button, label, menu, menu_action, menu_item,
-    menu_separator, pill,
+    Button, backdrop, button, callout, dot, focus_ring, icon_button, label, menu, menu_action,
+    menu_disabled, menu_separator, pill, popover,
 };
 use crate::theme::{CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint};
 
@@ -149,6 +149,8 @@ impl AppView {
                 {
                     self.selected = None;
                     self.detail = None;
+                    self.confirm = None;
+                    self.menu_open = false;
                 }
             }
             Err(e) => self.message = Some((format!("loading inventory: {e:#}"), true)),
@@ -277,7 +279,6 @@ impl AppView {
         .detach();
     }
 
-    /// Typing anywhere filters the list; Backspace edits, Escape closes the menu or clears.
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         if let Some(form) = &self.add {
@@ -533,7 +534,6 @@ impl AppView {
         self.status.get(&vm.id).map(|s| s.headline(vm.lifecycle))
     }
 
-    /// The agent as the header shows it, once the detail (with the agent record) has loaded.
     fn agent_view(&self, id: VmId) -> Option<AgentView> {
         let state = self
             .status
@@ -998,7 +998,6 @@ impl AppView {
         }
     }
 
-    /// The headline as a pill, then the SSH facts, then the agent.
     fn status_strip(&self, vm: &Vm) -> gpui::Div {
         let status = self.status.get(&vm.id);
         let headline = status.map(|s| s.label(vm.lifecycle));
@@ -1051,7 +1050,6 @@ impl AppView {
             })
     }
 
-    /// The "More" button and, while open, its menu: edit, remove, and the agent action.
     fn more_menu(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
         let id = vm.id;
         let agent_action = self.agent_view(id).map(|a| a.action());
@@ -1068,62 +1066,51 @@ impl AppView {
             )
             .when(self.menu_open, |d| {
                 let agent_item = agent_action.map(|action| {
-                    let text = if action == AgentAction::Remove {
-                        "Remove agent…"
-                    } else {
-                        action.label()
-                    };
-                    let danger = action == AgentAction::Remove;
-                    if idle {
-                        menu_action(action.id(), text, danger)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.menu_open = false;
-                                if action == AgentAction::Remove {
-                                    this.confirm = Some(Confirm::RemoveAgent(id));
-                                    cx.notify();
-                                } else {
-                                    this.run_agent_action(id, action, cx);
-                                }
-                            }))
-                            .into_any_element()
-                    } else {
-                        menu_item(action.id(), text, danger, false).into_any_element()
+                    if !idle {
+                        return menu_disabled(action.menu_label()).into_any_element();
                     }
+                    menu_action(action.id(), action.menu_label(), action.asks_first())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.menu_open = false;
+                            if action.asks_first() {
+                                this.confirm = Some(Confirm::RemoveAgent(id));
+                                cx.notify();
+                            } else {
+                                this.run_agent_action(id, action, cx);
+                            }
+                        }))
+                        .into_any_element()
                 });
-                d.child(
-                    deferred(
-                        div()
-                            .absolute()
-                            .top(CONTROL_HEIGHT + px(6.))
-                            .right_0()
-                            .child(
-                                menu()
-                                    .debug_selector(|| "menu".to_owned())
-                                    .occlude()
-                                    .child(menu_action("edit", "Edit VM…", false).on_click(
-                                        cx.listener(move |this, _, window, cx| {
-                                            this.menu_open = false;
-                                            this.open_edit_form(id, window, cx);
-                                        }),
-                                    ))
-                                    .child(menu_action("remove", "Remove VM…", true).on_click(
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.menu_open = false;
-                                            this.confirm = Some(Confirm::RemoveVm(id));
-                                            cx.notify();
-                                        }),
-                                    ))
-                                    .when_some(agent_item, |m, item| {
-                                        m.child(menu_separator()).child(item)
+                d.child(popover(
+                    div()
+                        .absolute()
+                        .top(CONTROL_HEIGHT + px(6.))
+                        .right_0()
+                        .child(
+                            menu()
+                                .debug_selector(|| "menu".to_owned())
+                                .occlude()
+                                .child(menu_action("edit", "Edit VM…", false).on_click(
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.menu_open = false;
+                                        this.open_edit_form(id, window, cx);
                                     }),
-                            ),
-                    )
-                    .with_priority(1),
-                )
+                                ))
+                                .child(menu_action("remove", "Remove VM…", true).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.menu_open = false;
+                                        this.confirm = Some(Confirm::RemoveVm(id));
+                                        cx.notify();
+                                    }),
+                                ))
+                                .when_some(agent_item, |m, item| {
+                                    m.child(menu_separator()).child(item)
+                                }),
+                        ),
+                ))
             })
     }
 
-    /// The VM's name and address, and its actions.
     fn title_row(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
         let id = vm.id;
         let ep = vm
@@ -1318,22 +1305,12 @@ impl Render for AppView {
                     .child(self.render_detail(cx)),
             )
             .when(self.menu_open, |d| {
-                // Below the menu, above everything else: a click outside closes it.
-                d.child(deferred(
-                    div()
-                        .id("menu-backdrop")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.menu_open = false;
-                                cx.notify();
-                            }),
-                        ),
+                d.child(backdrop(
+                    "menu-backdrop",
+                    cx.listener(|this, _, _, cx| {
+                        this.menu_open = false;
+                        cx.notify();
+                    }),
                 ))
             });
         crate::chrome::frame(window, body.into_any_element())

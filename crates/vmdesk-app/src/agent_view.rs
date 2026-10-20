@@ -11,7 +11,6 @@ use crate::theme::Tone;
 pub enum AgentAction {
     Install,
     Upgrade,
-    /// Asks for confirmation first.
     Remove,
 }
 
@@ -24,7 +23,21 @@ impl AgentAction {
         }
     }
 
-    /// Element id of the action's button.
+    /// Only removal asks for confirmation first; it deletes the agent from the VM.
+    pub fn asks_first(self) -> bool {
+        self == Self::Remove
+    }
+
+    /// The label in the More menu, with `…` when choosing it asks first.
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            Self::Install => "Install agent",
+            Self::Upgrade => "Upgrade agent",
+            Self::Remove => "Remove agent…",
+        }
+    }
+
+    /// Element id of the action's menu item.
     pub fn id(self) -> &'static str {
         match self {
             Self::Install => "agent-install",
