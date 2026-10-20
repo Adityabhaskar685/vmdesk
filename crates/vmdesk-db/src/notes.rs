@@ -73,7 +73,7 @@ impl Db {
     /// Adds a note to `vm`, pinned to `session` if given, which must be one of its own.
     pub async fn add_note(&self, vm: VmId, session: Option<SessionId>, body: &str) -> Result<Note> {
         let body = validate_body(body)?;
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM vms WHERE id = ?")
             .bind(vm.to_string())
             .fetch_optional(&mut *tx)

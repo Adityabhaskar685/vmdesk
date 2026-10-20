@@ -11,10 +11,12 @@ mod human;
 mod icon;
 mod kit;
 mod overview;
+mod search_view;
 mod terminal;
 mod theme;
 mod timeline_view;
 mod ui;
+mod work_view;
 
 use std::path::PathBuf;
 

@@ -10,16 +10,24 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use tokio::runtime::Handle;
 use vmdesk_collect::agent_install;
+use vmdesk_collect::work::{CurrentWork, current_work};
 use vmdesk_core::{
     CredentialRef, EndpointKind, Error as CoreError, Hop, HostKey, HostKeyStore, Vm, VmId, VmStatus,
 };
-use vmdesk_db::{AgentRecord, Db, EndpointInput, ListFilter, NewVm, TimelineEntry, VmPatch};
+use vmdesk_db::{
+    AgentRecord, Db, EndpointInput, ListFilter, NewVm, Note, NoteId, SearchHit, SessionId,
+    TimelineEntry, VmPatch, WorkSession,
+};
 use vmdesk_proto::Snapshot;
 use vmdesk_reach::Monitor;
 use vmdesk_transport::{SshSession, Transport};
 
 /// Events shown in the timeline tab.
 const TIMELINE_LIMIT: u32 = 300;
+/// Work sessions shown in the sessions tab.
+const SESSION_LIMIT: u32 = 100;
+/// Search hits shown, newest first.
+pub const SEARCH_LIMIT: u32 = 100;
 
 #[derive(Clone)]
 pub struct Backend {
@@ -32,6 +40,8 @@ pub struct Backend {
 pub struct Inventory {
     pub vms: Vec<Vm>,
     pub status: HashMap<VmId, VmStatus>,
+    /// The current-work line of each VM whose latest snapshot shows something to anchor on.
+    pub work: HashMap<VmId, String>,
 }
 
 /// How a new VM logs in.
@@ -81,6 +91,13 @@ pub struct Detail {
     pub timeline: Vec<TimelineEntry>,
     /// The VM's agent, once one has answered a sync. Its state is in the VM's status.
     pub agent: Option<AgentRecord>,
+    /// Newest first.
+    pub sessions: Vec<WorkSession>,
+    /// Newest first.
+    pub notes: Vec<Note>,
+    /// What the latest snapshot and session say you were doing; `None` before the first
+    /// snapshot.
+    pub work: Option<CurrentWork>,
 }
 
 impl Backend {
@@ -117,9 +134,22 @@ impl Backend {
     pub fn inventory(&self) -> impl Future<Output = anyhow::Result<Inventory>> + use<> {
         let db = self.db.clone();
         self.run(async move {
+            let vms = db.list_vms(&ListFilter::default()).await?;
+            let mut work = HashMap::new();
+            for vm in &vms {
+                match work_line(&db, vm.id).await {
+                    Ok(Some(line)) => {
+                        work.insert(vm.id, line);
+                    }
+                    Ok(None) => {}
+                    // One unreadable snapshot must not stop the list updating.
+                    Err(e) => tracing::debug!(vm = %vm.name, error = %e, "no current-work line"),
+                }
+            }
             Ok(Inventory {
-                vms: db.list_vms(&ListFilter::default()).await?,
+                vms,
                 status: db.all_status().await?,
+                work,
             })
         })
     }
@@ -127,11 +157,67 @@ impl Backend {
     pub fn detail(&self, vm: VmId) -> impl Future<Output = anyhow::Result<Detail>> + use<> {
         let db = self.db.clone();
         self.run(async move {
+            let snapshot = db.latest_snapshot(vm).await?;
+            let sessions = db.sessions(vm, SESSION_LIMIT).await?;
+            let notes = db.notes(vm).await?;
             Ok(Detail {
-                snapshot: db.latest_snapshot(vm).await?,
+                work: snapshot
+                    .as_ref()
+                    .map(|s| current_work(s, sessions.first(), &notes)),
+                snapshot,
                 timeline: db.timeline(vm, TIMELINE_LIMIT, None).await?,
                 agent: db.agent(vm).await?,
+                sessions,
+                notes,
             })
+        })
+    }
+
+    /// Adds a note to `vm`'s latest work session, as `vmdesk note` does, or to none when
+    /// the VM has no session yet.
+    pub fn add_note(
+        &self,
+        vm: VmId,
+        body: String,
+    ) -> impl Future<Output = anyhow::Result<Note>> + use<> {
+        let db = self.db.clone();
+        self.run(async move {
+            let session = db.latest_session(vm).await?;
+            Ok(db.add_note(vm, session.map(|s| s.id), &body).await?)
+        })
+    }
+
+    pub fn delete_note(&self, id: NoteId) -> impl Future<Output = anyhow::Result<()>> + use<> {
+        let db = self.db.clone();
+        self.run(async move { Ok(db.delete_note(id).await?) })
+    }
+
+    /// Sets a session's title; an empty one clears it.
+    pub fn rename_session(
+        &self,
+        id: SessionId,
+        title: String,
+    ) -> impl Future<Output = anyhow::Result<()>> + use<> {
+        let db = self.db.clone();
+        self.run(async move {
+            db.rename_session(id, &title).await?;
+            Ok(())
+        })
+    }
+
+    /// Events on every VM matching `query`, newest first, at most [`SEARCH_LIMIT`].
+    /// `None` when the query has no letter or digit to search for.
+    pub fn search(
+        &self,
+        query: String,
+    ) -> impl Future<Output = anyhow::Result<Option<Vec<SearchHit>>>> + use<> {
+        let db = self.db.clone();
+        self.run(async move {
+            match db.search(&query, None, SEARCH_LIMIT).await {
+                Ok(hits) => Ok(Some(hits)),
+                Err(vmdesk_db::Error::Invalid(_)) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
         })
     }
 
@@ -406,6 +492,16 @@ impl Backend {
             crate::terminal::open(target, &all, &dir)
         })
     }
+}
+
+/// `vm`'s current-work line, when its latest snapshot shows something to anchor on.
+async fn work_line(db: &Db, vm: VmId) -> anyhow::Result<Option<String>> {
+    let Some(snapshot) = db.latest_snapshot(vm).await? else {
+        return Ok(None);
+    };
+    let session = db.latest_session(vm).await?;
+    let work = current_work(&snapshot, session.as_ref(), &[]);
+    Ok(work.anchor.is_some().then(|| work.line()))
 }
 
 /// A session to `vm` over its path, trusting no new host keys. Close the transport when

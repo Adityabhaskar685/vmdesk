@@ -62,6 +62,14 @@ impl Db {
         &self.pool
     }
 
+    /// A transaction holding the write lock from its start, for every transaction
+    /// here writes. Begun with a plain `BEGIN`, one that reads first fails with
+    /// "database is locked", without waiting, when another connection writes between
+    /// its read and its write.
+    pub(crate) async fn write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
     pub async fn vm_count(&self) -> Result<i64> {
         Ok(sqlx::query_scalar("SELECT COUNT(*) FROM vms")
             .fetch_one(&self.pool)
@@ -105,5 +113,48 @@ pub(crate) mod tests {
     async fn migrates_empty_inventory() {
         let db = Db::open_in_memory().await.unwrap();
         assert_eq!(db.vm_count().await.unwrap(), 0);
+    }
+
+    /// The app's monitor, poller and window write at once. A transaction that reads
+    /// before it writes must wait for the others, not fail with "database is locked".
+    #[tokio::test]
+    async fn concurrent_writers_wait_for_each_other() {
+        use vmdesk_core::{AgentState, SshState, VmStatus};
+
+        let dir = std::env::temp_dir().join(format!("vmdesk-writers-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir.join("vmdesk.db")).await.unwrap();
+        let vm = add_vm(&db, "box").await;
+        let writers: Vec<_> = (0..8)
+            .map(|w| {
+                let db = db.clone();
+                tokio::spawn(async move {
+                    for i in 0..25 {
+                        let ssh = if (w + i) % 2 == 0 {
+                            SshState::Ok
+                        } else {
+                            SshState::Timeout
+                        };
+                        db.save_status(&VmStatus {
+                            vm,
+                            route: None,
+                            ssh,
+                            agent: AgentState::Unknown,
+                            checked_at: chrono::Utc::now(),
+                            detail: None,
+                        })
+                        .await?;
+                        db.set_agent_state(vm, [AgentState::Ok, AgentState::NotRunning][i % 2])
+                            .await?;
+                        db.add_note(vm, None, "note").await?;
+                    }
+                    Ok::<_, Error>(())
+                })
+            })
+            .collect();
+        for w in writers {
+            w.await.unwrap().unwrap();
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 }

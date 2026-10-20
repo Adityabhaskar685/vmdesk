@@ -62,7 +62,7 @@ impl Db {
         agent: &AgentRecord,
         gap: Option<(DateTime<Utc>, DateTime<Utc>)>,
     ) -> Result<()> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         sqlx::query(&format!(
             "INSERT INTO agents ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) \
             ON CONFLICT (vm_id) DO UPDATE SET agent_id = excluded.agent_id, \
@@ -105,7 +105,7 @@ impl Db {
         events: &[Event],
     ) -> Result<u64> {
         let source = agent_source(agent_id);
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         let mut added = 0;
         for e in events {
             added += sqlx::query(

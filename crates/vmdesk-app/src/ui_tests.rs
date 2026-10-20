@@ -481,3 +481,389 @@ fn the_timeline_reads_as_sentences_under_day_headers(cx: &mut TestAppContext) {
         "local times, no ISO timestamp: {gap}"
     );
 }
+
+/// A VM with nothing else stored.
+fn add_vm(env: &Env, name: &str) -> VmId {
+    let db = env.backend.db.clone();
+    env.rt.block_on(async {
+        db.create_vm(NewVm {
+            name: name.into(),
+            username: "root".into(),
+            credential: CredentialRef::SshAgent,
+            endpoints: vec![EndpointInput {
+                address: "127.0.0.1".into(),
+                port: 1,
+                kind: EndpointKind::default(),
+                bind_interface: None,
+            }],
+            paths: None,
+            tags: vec![],
+            favourite: false,
+        })
+        .await
+        .unwrap()
+        .id
+    })
+}
+
+/// `pytest tests/group2` running in the attached tmux session `nightly`, in the repo
+/// `/root/regal` on `group2-fix` with 3 modified files; started 50 minutes ago, which
+/// starts the VM's work session.
+fn seed_work(env: &Env, vm: VmId) {
+    use vmdesk_proto::{EventKind, ProcessInfo, RepoInfo, Snapshot, TmuxSession};
+    let now = Utc::now();
+    let process = |pid, ppid, cmdline: &str, cwd: &str, ago: i64| ProcessInfo {
+        pid,
+        ppid,
+        user: "root".into(),
+        cmdline: cmdline.into(),
+        cwd: Some(cwd.into()),
+        started_at: now.timestamp() - ago,
+        cpu_pct: 0.,
+        rss_kb: 0,
+    };
+    let snapshot = Snapshot {
+        taken_at: Some(now),
+        processes: vec![
+            process(100, 1, "tmux new -s nightly", "/root", 9000),
+            process(101, 100, "-bash", "/root/regal", 9000),
+            process(102, 101, "pytest tests/group2", "/root/regal", 3000),
+        ],
+        tmux: vec![TmuxSession {
+            name: "nightly".into(),
+            windows: 1,
+            attached: true,
+            created: now.timestamp() - 9000,
+            pane_cwd: Some("/root/regal".into()),
+            pane_command: Some("pytest".into()),
+        }],
+        repos: vec![RepoInfo {
+            path: "/root/regal".into(),
+            branch: Some("group2-fix".into()),
+            dirty: 3,
+            ahead: None,
+            behind: None,
+            last_commit: None,
+        }],
+        ..Snapshot::default()
+    };
+    let events = [
+        (
+            now - chrono::Duration::minutes(50),
+            EventKind::ProcessStarted {
+                pid: 102,
+                cmdline: "pytest tests/group2".into(),
+                cwd: Some("/root/regal".into()),
+            },
+        ),
+        (
+            now - chrono::Duration::minutes(10),
+            EventKind::TmuxAttached {
+                name: "nightly".into(),
+            },
+        ),
+    ];
+    let db = env.backend.db.clone();
+    env.rt.block_on(async {
+        db.record_snapshot(vm, "ssh", &snapshot, &events)
+            .await
+            .unwrap();
+    });
+}
+
+fn sessions_of(env: &Env, vm: VmId) -> Vec<vmdesk_db::WorkSession> {
+    let db = env.backend.db.clone();
+    env.rt
+        .block_on(async { db.sessions(vm, 10).await.unwrap() })
+}
+
+fn notes_of(env: &Env, vm: VmId) -> Vec<vmdesk_db::Note> {
+    let db = env.backend.db.clone();
+    env.rt.block_on(async { db.notes(vm).await.unwrap() })
+}
+
+/// A selector built at run time.
+fn dynamic(selector: String) -> &'static str {
+    Box::leak(selector.into_boxed_str())
+}
+
+fn search_state(cx: &mut VisualTestContext, view: &Entity<AppView>) -> String {
+    view.read_with(cx, |v, _| {
+        format!("{:?}", v.search.as_ref().map(|s| &s.state))
+    })
+}
+
+#[gpui::test]
+fn the_card_and_the_list_say_what_you_were_doing(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let session = sessions_of(&env, vm)[0].id;
+    env.rt.block_on(async {
+        env.backend
+            .db
+            .add_note(vm, Some(session), "waiting on CI")
+            .await
+            .unwrap();
+    });
+    let (view, cx) = open_lab(cx, &env);
+
+    assert!(shown(cx, "work-card"), "the card is on the Overview");
+    assert!(shown(cx, "work: pytest tests/group2"));
+    assert!(shown(cx, "note: waiting on CI"), "the note is on the card");
+    assert!(shown(cx, "work-session"), "and the session it belongs to");
+
+    let line = view.read_with(cx, |v, _| v.work.get(&vm).cloned()).unwrap();
+    assert!(
+        line.starts_with(
+            "pytest tests/group2 in regal @ group2-fix (3 modified) · tmux nightly · since "
+        ),
+        "{line}"
+    );
+    assert!(
+        shown(cx, dynamic(format!("lab work: {line}"))),
+        "the list shows it too"
+    );
+}
+
+#[gpui::test]
+fn a_vm_with_nothing_running_says_so_and_the_list_skips_it(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    let db = env.backend.db.clone();
+    env.rt.block_on(async {
+        let snapshot = vmdesk_proto::Snapshot {
+            taken_at: Some(Utc::now()),
+            ..vmdesk_proto::Snapshot::default()
+        };
+        db.record_snapshot(vm, "ssh", &snapshot, &[]).await.unwrap();
+    });
+    let (view, cx) = open_lab(cx, &env);
+    assert!(shown(cx, "work: nothing"));
+    assert!(view.read_with(cx, |v, _| v.work.is_empty()));
+    assert!(!shown(cx, "work-session"), "no session yet");
+}
+
+#[gpui::test]
+fn sessions_are_listed_and_a_rename_persists(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "tab-sessions");
+    let started = sessions_of(&env, vm)[0]
+        .started_at
+        .with_timezone(&chrono::Local);
+    let header = if started.date_naive() == chrono::Local::now().date_naive() {
+        "day: Today"
+    } else {
+        "day: Yesterday"
+    };
+    assert!(shown(cx, header), "under the day it started");
+    assert!(shown(cx, "session: Untitled session"));
+
+    click(cx, "session: Untitled session");
+    cx.simulate_keystrokes("x escape");
+    assert!(
+        shown(cx, "session: Untitled session"),
+        "Esc leaves the title alone"
+    );
+    assert_eq!(sessions_of(&env, vm)[0].title, None);
+
+    click(cx, "session: Untitled session");
+    cx.simulate_keystrokes("n i g h t l y space d e b u g enter");
+    wait(cx, &view, "the new title", |v| {
+        v.detail
+            .as_ref()
+            .is_some_and(|d| d.sessions[0].title.is_some())
+    });
+    assert_eq!(
+        sessions_of(&env, vm)[0].title.as_deref(),
+        Some("nightly debug"),
+        "stored"
+    );
+    assert!(shown(cx, "session: nightly debug"));
+    assert!(view.read_with(cx, |v, _| v.inline.is_none()));
+}
+
+#[gpui::test]
+fn a_note_added_on_the_card_lands_on_the_latest_session(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "add-note");
+    assert!(!shown(cx, "add-note"), "the button gives way to the field");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(notes_of(&env, vm).is_empty(), "an empty note is not saved");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.message.clone()),
+        None,
+        "nor sent"
+    );
+    cx.simulate_keystrokes("f l a k y space n 4 space t e s t enter");
+    wait(cx, &view, "the note", |v| {
+        v.detail.as_ref().is_some_and(|d| d.notes.len() == 1)
+    });
+    let notes = notes_of(&env, vm);
+    assert_eq!(notes[0].body, "flaky n4 test");
+    assert_eq!(notes[0].session, Some(sessions_of(&env, vm)[0].id));
+    assert!(shown(cx, "note: flaky n4 test"), "on the card");
+    assert!(shown(cx, "add-note"));
+
+    click(cx, "tab-sessions");
+    assert!(shown(cx, "note: flaky n4 test"), "and in its session");
+    click(cx, "delete note: flaky n4 test");
+    wait(cx, &view, "the note to go", |v| {
+        v.detail.as_ref().is_some_and(|d| d.notes.is_empty())
+    });
+    assert!(notes_of(&env, vm).is_empty());
+    assert!(!shown(cx, "note: flaky n4 test"));
+}
+
+#[gpui::test]
+fn search_finds_an_event_on_another_vm_and_opens_its_timeline(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let dev93 = add_vm(&env, "dev93");
+    let db = env.backend.db.clone();
+    let at = Utc::now() - chrono::Duration::days(6);
+    env.rt.block_on(async {
+        let snapshot = vmdesk_proto::Snapshot {
+            taken_at: Some(at),
+            ..vmdesk_proto::Snapshot::default()
+        };
+        let started = vmdesk_proto::EventKind::ProcessStarted {
+            pid: 7,
+            cmdline: "pytest upf-tests/test_n4.py".into(),
+            cwd: Some("/root/regal".into()),
+        };
+        db.record_snapshot(dev93, "ssh", &snapshot, &[(at, started)])
+            .await
+            .unwrap();
+    });
+    let (view, cx) = open_lab(cx, &env);
+    view.update_in(cx, |v, window, cx| {
+        let focus = v.focus.clone();
+        window.focus(&focus, cx);
+    });
+
+    cx.simulate_keystrokes("ctrl-k");
+    assert!(view.read_with(cx, |v, _| v.search.is_some()));
+    cx.simulate_keystrokes("- -");
+    cx.executor().advance_clock(DEBOUNCE * 2);
+    cx.run_until_parked();
+    assert_eq!(
+        search_state(cx, &view),
+        "Some(Idle)",
+        "nothing to search for is quiet"
+    );
+
+    cx.simulate_keystrokes("backspace backspace u p f");
+    cx.executor().advance_clock(DEBOUNCE / 2);
+    cx.simulate_keystrokes("- t e s t");
+    cx.executor().advance_clock(DEBOUNCE / 2);
+    cx.run_until_parked();
+    assert_eq!(
+        search_state(cx, &view),
+        "Some(Idle)",
+        "no query until typing pauses, and each edit restarts the wait"
+    );
+    cx.executor().advance_clock(DEBOUNCE / 2);
+    wait(cx, &view, "the hits", |v| {
+        matches!(
+            v.search.as_ref().map(|s| &s.state),
+            Some(SearchState::Results { .. })
+        )
+    });
+    assert!(shown(cx, "hit: dev93 Started pytest upf-tests/test_n4.py"));
+
+    click(cx, "hit: dev93 Started pytest upf-tests/test_n4.py");
+    wait(cx, &view, "dev93's timeline", |v| {
+        v.search.is_none()
+            && v.selected == Some(dev93)
+            && v.tab == Tab::Timeline
+            && v.detail.is_some()
+    });
+    assert!(shown(cx, "event: Started pytest upf-tests/test_n4.py"));
+
+    cx.simulate_keystrokes("ctrl-k z z z q");
+    cx.executor().advance_clock(DEBOUNCE);
+    wait(cx, &view, "no match", |v| {
+        matches!(
+            v.search.as_ref().map(|s| &s.state),
+            Some(SearchState::Empty { .. })
+        )
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(
+        view.read_with(cx, |v, _| v.search.is_none()),
+        "Esc closes it"
+    );
+}
+
+#[gpui::test]
+fn a_field_that_loses_focus_gives_the_keys_back(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let (view, cx) = open_lab(cx, &env);
+    let field_text = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, cx| {
+            v.inline
+                .as_ref()
+                .map(|i| i.field().read(cx).text().to_owned())
+        })
+    };
+
+    click(cx, "add-note");
+    cx.simulate_keystrokes("h a l f");
+    click(cx, "work: pytest tests/group2");
+    cx.simulate_keystrokes("x enter");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.filter.clone()),
+        "x",
+        "typing filters the list again"
+    );
+    assert_eq!(
+        field_text(cx).as_deref(),
+        Some("half"),
+        "the field keeps its text"
+    );
+    assert!(
+        notes_of(&env, vm).is_empty(),
+        "Enter outside it saves nothing"
+    );
+
+    cx.simulate_keystrokes("escape");
+    assert_eq!(field_text(cx), None, "Esc closes it");
+    assert_eq!(view.read_with(cx, |v, _| v.filter.clone()), "x");
+}
+
+#[gpui::test]
+fn a_rename_the_database_refuses_keeps_its_text(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    seed_work(&env, vm);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "tab-sessions");
+    click(cx, "session: Untitled session");
+    let too_long = vec!["x"; 201].join(" ");
+    cx.simulate_keystrokes(&too_long);
+    cx.simulate_keystrokes("enter");
+    wait(cx, &view, "the refusal", |v| {
+        v.message.as_ref().is_some_and(|(_, err)| *err)
+    });
+    let kept = view.read_with(cx, |v, cx| {
+        v.inline
+            .as_ref()
+            .map(|i| i.field().read(cx).text().chars().count())
+    });
+    assert_eq!(kept, Some(201), "the field is back with what was typed");
+    assert_eq!(sessions_of(&env, vm)[0].title, None);
+}

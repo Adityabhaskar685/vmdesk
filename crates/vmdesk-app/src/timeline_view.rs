@@ -48,14 +48,14 @@ pub struct Span {
 
 pub type Line = Vec<Span>;
 
-fn plain(text: impl Into<String>) -> Span {
+pub fn plain(text: impl Into<String>) -> Span {
     Span {
         text: text.into(),
         code: false,
     }
 }
 
-fn code(text: impl Into<String>) -> Span {
+pub fn code(text: impl Into<String>) -> Span {
     Span {
         text: text.into(),
         code: true,
@@ -531,7 +531,8 @@ fn source_tag(source: &str) -> &str {
     }
 }
 
-fn row(entry: &TimelineEntry) -> Row {
+/// One event as a timeline row.
+pub fn describe(entry: &TimelineEntry) -> Row {
     let event = Event {
         entry,
         at: entry.ts.with_timezone(&Local),
@@ -558,7 +559,7 @@ fn row(entry: &TimelineEntry) -> Row {
 pub fn present(entries: &[TimelineEntry], now: DateTime<Local>) -> Vec<Day> {
     let mut days: Vec<Day> = Vec::new();
     for entry in entries {
-        let next = row(entry);
+        let next = describe(entry);
         let label = day(next.at, now);
         if days.last().is_none_or(|d| d.label != label) {
             days.push(Day {
@@ -615,7 +616,7 @@ pub fn render(days: &[Day]) -> Div {
         }))
 }
 
-fn day_header(day: &str, first: bool) -> Div {
+pub fn day_header(day: &str, first: bool) -> Div {
     let selector = format!("day: {day}");
     div()
         .debug_selector(|| selector)
@@ -635,7 +636,7 @@ fn day_header(day: &str, first: bool) -> Div {
         .child(div().flex_1().h(px(1.)).bg(rgb(color::BORDER)))
 }
 
-fn spans(line: &[Span]) -> impl Iterator<Item = Div> + '_ {
+pub fn spans(line: &[Span]) -> impl Iterator<Item = Div> + '_ {
     line.iter().filter(|s| !s.text.is_empty()).map(|s| {
         let d = div().whitespace_nowrap().child(s.text.clone());
         if s.code {
@@ -651,7 +652,7 @@ fn spans(line: &[Span]) -> impl Iterator<Item = Div> + '_ {
     })
 }
 
-fn marker(r: &Row) -> Div {
+pub fn marker(r: &Row) -> Div {
     let dot = div()
         .size(px(9.))
         .rounded_full()
@@ -677,6 +678,62 @@ fn marker(r: &Row) -> Div {
         .child(dot.bg(rgb(if r.ended { color::BG } else { r.color })))
 }
 
+/// The event's local time, in the first column of a row.
+pub fn time_cell(r: &Row) -> Div {
+    div()
+        .w(px(38.))
+        .flex_shrink_0()
+        .text_size(text::META)
+        .text_color(rgb(color::TEXT_MUTED))
+        .child(r.at.format("%H:%M").to_string())
+}
+
+/// The sentence, its count and its detail.
+pub fn sentence(r: &Row) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap(space::S)
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .text_size(text::BODY)
+                .text_color(rgb(color::TEXT))
+                .children(spans(&r.title)),
+        )
+        .when(r.count > 1, |d| {
+            d.child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(6.))
+                    .rounded_full()
+                    .bg(rgb(color::HOVER))
+                    .text_size(text::SMALL)
+                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .child(format!("×{}", r.count)),
+            )
+        })
+        .when_some(r.detail.as_ref(), |d, detail| {
+            d.child(
+                div()
+                    .flex_shrink(20.)
+                    .min_w_0()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .text_size(text::META)
+                    .text_color(rgb(color::TEXT_MUTED))
+                    .children(spans(detail)),
+            )
+        })
+}
+
 fn row_view(r: &Row) -> Div {
     let title = text_of(&r.title);
     div()
@@ -685,59 +742,9 @@ fn row_view(r: &Row) -> Div {
         .flex()
         .items_center()
         .gap(space::M)
-        .child(
-            div()
-                .w(px(38.))
-                .flex_shrink_0()
-                .text_size(text::META)
-                .text_color(rgb(color::TEXT_MUTED))
-                .child(r.at.format("%H:%M").to_string()),
-        )
+        .child(time_cell(r))
         .child(marker(r))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .gap(space::S)
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .flex()
-                        .items_center()
-                        .text_size(text::BODY)
-                        .text_color(rgb(color::TEXT))
-                        .children(spans(&r.title)),
-                )
-                .when(r.count > 1, |d| {
-                    d.child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(6.))
-                            .rounded_full()
-                            .bg(rgb(color::HOVER))
-                            .text_size(text::SMALL)
-                            .text_color(rgb(color::TEXT_SECONDARY))
-                            .child(format!("×{}", r.count)),
-                    )
-                })
-                .when_some(r.detail.as_ref(), |d, detail| {
-                    d.child(
-                        div()
-                            .flex_shrink(20.)
-                            .min_w_0()
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .text_size(text::META)
-                            .text_color(rgb(color::TEXT_MUTED))
-                            .children(spans(detail)),
-                    )
-                }),
-        )
+        .child(sentence(r))
         .child(
             div()
                 .flex_shrink_0()

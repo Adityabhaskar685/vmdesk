@@ -43,7 +43,7 @@ impl Db {
         listing: Vec<ProviderVm>,
         default_user: &str,
     ) -> Result<SyncReport> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write().await?;
         let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM providers WHERE id = ?")
             .bind(&provider.0)
             .fetch_optional(&mut *tx)
