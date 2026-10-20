@@ -299,7 +299,8 @@ fn parse_cwds(body: &str) -> HashMap<u32, String> {
         .collect()
 }
 
-fn program(cmdline: &str) -> &str {
+/// The program a command line runs, without its directory or a login shell's `-`.
+pub(crate) fn program(cmdline: &str) -> &str {
     let first = cmdline.split_whitespace().next().unwrap_or("");
     first
         .rsplit('/')

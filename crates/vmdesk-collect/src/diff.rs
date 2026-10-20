@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Duration, Utc};
 use vmdesk_proto::{EventKind, ProcessInfo, Snapshot};
 
+use crate::probe::program;
+
 /// Polls further apart than this leave a `gap` in the timeline.
 pub const GAP_AFTER: Duration = Duration::minutes(45);
 /// A process becomes an event once it has run this long (or matches the watchlist).
@@ -70,17 +72,20 @@ fn at(secs: i64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp(secs, 0)
 }
 
-/// Long-lived, on the watchlist, or running in a tmux pane.
-fn interesting(p: &ProcessInfo, observed_at: i64, tmux_shells: &HashSet<u32>) -> bool {
-    let prog = p.cmdline.split_whitespace().next().unwrap_or("");
-    let prog = prog.rsplit('/').next().unwrap_or(prog);
-    observed_at - p.started_at >= LONG_LIVED_SECS
-        || WATCHLIST.contains(&prog)
-        || tmux_shells.contains(&p.ppid)
+/// The processes of `s` that become events (spec section 11): running for 30 s by
+/// `observed_at` (Unix seconds), on the watchlist, or in a tmux pane.
+pub fn interesting_processes(s: &Snapshot, observed_at: i64) -> impl Iterator<Item = &ProcessInfo> {
+    let panes = tmux_shells(s);
+    s.processes.iter().filter(move |p| {
+        observed_at - p.started_at >= LONG_LIVED_SECS
+            || WATCHLIST.contains(&program(&p.cmdline))
+            || panes.contains(&p.ppid)
+    })
 }
 
 /// Shell processes whose parent is the tmux server: commands under them run in a pane.
-fn tmux_shells(s: &Snapshot) -> HashSet<u32> {
+#[must_use]
+pub fn tmux_shells(s: &Snapshot) -> HashSet<u32> {
     let servers: HashSet<u32> = s
         .processes
         .iter()
@@ -102,17 +107,10 @@ fn processes(
     rebooted: bool,
     events: &mut Vec<(DateTime<Utc>, EventKind)>,
 ) {
-    let (prev_tmux, next_tmux) = (tmux_shells(prev), tmux_shells(next));
-    let before: HashMap<u32, &ProcessInfo> = prev
-        .processes
-        .iter()
-        .filter(|p| interesting(p, then.timestamp(), &prev_tmux))
+    let before: HashMap<u32, &ProcessInfo> = interesting_processes(prev, then.timestamp())
         .map(|p| (p.pid, p))
         .collect();
-    let after: HashMap<u32, &ProcessInfo> = next
-        .processes
-        .iter()
-        .filter(|p| interesting(p, now.timestamp(), &next_tmux))
+    let after: HashMap<u32, &ProcessInfo> = interesting_processes(next, now.timestamp())
         .map(|p| (p.pid, p))
         .collect();
     // A pid is only the same process if it also started at (about) the same time;
