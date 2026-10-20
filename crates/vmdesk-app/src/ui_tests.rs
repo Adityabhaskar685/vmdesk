@@ -652,7 +652,15 @@ fn sessions_are_listed_and_a_rename_persists(cx: &mut TestAppContext) {
     let (view, cx) = open_lab(cx, &env);
 
     click(cx, "tab-sessions");
-    assert!(shown(cx, "day: Today"));
+    let started = sessions_of(&env, vm)[0]
+        .started_at
+        .with_timezone(&chrono::Local);
+    let header = if started.date_naive() == chrono::Local::now().date_naive() {
+        "day: Today"
+    } else {
+        "day: Yesterday"
+    };
+    assert!(shown(cx, header), "under the day it started");
     assert!(shown(cx, "session: Untitled session"));
 
     click(cx, "session: Untitled session");
