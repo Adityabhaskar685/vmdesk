@@ -11,7 +11,7 @@ use vmdesk_proto::{Event, EventKind};
 use crate::inventory::{from_ms, parse_id};
 use crate::status::LAPTOP;
 use crate::timeline::{event_data, insert_event};
-use crate::{Db, Error, Result};
+use crate::{Db, Error, Result, sessions};
 
 /// What the laptop knows about a VM's agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -96,7 +96,8 @@ impl Db {
     }
 
     /// Stores events reported by agent `agent_id` with their own seqs, skipping any
-    /// already stored, and advances that agent's `last_seq`. Returns how many were new.
+    /// already stored, advances that agent's `last_seq` and re-derives the VM's work
+    /// sessions. Returns how many were new.
     pub async fn insert_agent_events(
         &self,
         vm: VmId,
@@ -130,6 +131,11 @@ impl Db {
             .bind(agent_id.to_string())
             .execute(&mut *tx)
             .await?;
+        }
+        if added > 0 {
+            let window =
+                sessions::window(events.iter().map(|e| (e.ts.timestamp_millis(), &e.kind)));
+            sessions::refresh_in(&mut tx, vm, window).await?;
         }
         tx.commit().await?;
         Ok(added)

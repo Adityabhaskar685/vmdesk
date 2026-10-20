@@ -332,3 +332,153 @@ async fn agent_route() {
     let res = test::call_service(&app, get(uuid::Uuid::now_v7().to_string()).to_request()).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "no VM");
 }
+
+#[actix_web::test]
+async fn sessions_notes_current_work_and_search() {
+    let db = vmdesk_db::Db::open_in_memory().await.unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AppState {
+                db: db.clone(),
+                token: Arc::from(TOKEN),
+            }))
+            .configure(configure),
+    )
+    .await;
+    let req = auth(test::TestRequest::post().uri("/api/v1/vms"))
+        .set_json(
+            json!({ "name": "lab", "username": "a", "endpoints": [{ "address": "10.0.0.9" }] }),
+        )
+        .to_request();
+    let vm: Value = test::call_and_read_body_json(&app, req).await;
+    let id = vm["id"].as_str().unwrap().to_owned();
+    let vm_id: vmdesk_core::VmId = id.parse().unwrap();
+    let call = |req: test::TestRequest| test::call_service(&app, auth(req).to_request());
+
+    let res = call(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/current-work"))).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "no snapshot yet");
+
+    let now = chrono::Utc::now();
+    let started = now.timestamp() - 600;
+    let snapshot = vmdesk_proto::Snapshot {
+        taken_at: Some(now),
+        processes: vec![vmdesk_proto::ProcessInfo {
+            pid: 7,
+            ppid: 6,
+            user: "a".into(),
+            cmdline: "pytest upf-tests/n4".into(),
+            cwd: Some("/root/regal".into()),
+            started_at: started,
+            cpu_pct: 0.0,
+            rss_kb: 0,
+        }],
+        ..vmdesk_proto::Snapshot::default()
+    };
+    let event = vmdesk_proto::EventKind::ProcessStarted {
+        pid: 7,
+        cmdline: "pytest upf-tests/n4".into(),
+        cwd: Some("/root/regal".into()),
+    };
+    let at = chrono::DateTime::from_timestamp(started, 0).unwrap();
+    db.record_snapshot(vm_id, "ssh", &snapshot, &[(at, event)])
+        .await
+        .unwrap();
+
+    let res = call(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/sessions"))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let sessions: Value = test::read_body_json(res).await;
+    assert_eq!(sessions.as_array().unwrap().len(), 1);
+    assert_eq!(sessions[0]["ongoing"], true);
+    assert_eq!(
+        sessions[0]["summary"]["commands"][0]["cmdline"],
+        "pytest upf-tests/n4"
+    );
+    let session = sessions[0]["id"].as_str().unwrap().to_owned();
+
+    let patch = |body: Value, session: &str| {
+        test::TestRequest::patch()
+            .uri(&format!("/api/v1/sessions/{session}"))
+            .set_json(body)
+    };
+    let res = call(patch(json!({ "title": "n4 tests" }), &session)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let renamed: Value = test::read_body_json(res).await;
+    assert_eq!(renamed["title"], "n4 tests");
+    for (body, status) in [
+        (json!({ "title": null }), StatusCode::BAD_REQUEST),
+        (json!({}), StatusCode::BAD_REQUEST),
+        (
+            json!({ "title": "x".repeat(201) }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        assert_eq!(
+            call(patch(body.clone(), &session)).await.status(),
+            status,
+            "{body}"
+        );
+    }
+    let res = call(patch(
+        json!({ "title": "x" }),
+        &uuid::Uuid::now_v7().to_string(),
+    ))
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    let post = |body: Value| {
+        test::TestRequest::post()
+            .uri(&format!("/api/v1/vms/{id}/notes"))
+            .set_json(body)
+    };
+    let res = call(post(json!({ "body": "waiting on CI" }))).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let pinned: Value = test::read_body_json(res).await;
+    assert_eq!(pinned["session"], session.as_str(), "the latest session");
+    let res = call(post(json!({ "body": "about the VM", "session": null }))).await;
+    let unpinned: Value = test::read_body_json(res).await;
+    assert_eq!(unpinned["session"], Value::Null);
+    let res = call(post(
+        json!({ "body": "x", "session": uuid::Uuid::now_v7() }),
+    ))
+    .await;
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let res = call(post(json!({ "body": "  " }))).await;
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let res = call(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/notes"))).await;
+    let notes: Value = test::read_body_json(res).await;
+    assert_eq!(notes.as_array().unwrap().len(), 2);
+
+    let res = call(test::TestRequest::get().uri(&format!("/api/v1/vms/{id}/current-work"))).await;
+    let work: Value = test::read_body_json(res).await;
+    assert_eq!(work["note"], "waiting on CI");
+    assert_eq!(work["anchor"]["kind"], "process");
+    let line = work["line"].as_str().unwrap();
+    assert!(
+        line.starts_with("pytest upf-tests/n4 in /root/regal · since "),
+        "{line}"
+    );
+
+    let search = |q: &str| test::TestRequest::get().uri(&format!("/api/v1/search?{q}"));
+    let hits: Value = test::read_body_json(call(search("q=upf-tests")).await).await;
+    assert_eq!(hits.as_array().unwrap().len(), 1);
+    assert_eq!(
+        (hits[0]["vm_name"].as_str(), hits[0]["kind"].as_str()),
+        (Some("lab"), Some("process_started"))
+    );
+    let hits: Value = test::read_body_json(call(search("q=%22pytest%22%20OR")).await).await;
+    assert_eq!(hits.as_array().unwrap().len(), 0, "quotes and OR are words");
+    let future = (now + chrono::Duration::hours(1)).to_rfc3339();
+    let later = format!("q=pytest&since={}", future.replace('+', "%2B"));
+    let hits: Value = test::read_body_json(call(search(&later)).await).await;
+    assert_eq!(hits.as_array().unwrap().len(), 0);
+    let hits: Value = test::read_body_json(call(search("q=pytest")).await).await;
+    assert_eq!(hits.as_array().unwrap().len(), 1);
+    assert_eq!(
+        call(search("q=--")).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(search("limit=5")).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+}

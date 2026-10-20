@@ -229,6 +229,62 @@ uncommitted changes, ports opening and closing, reboots, and gaps when the VM wa
 from VMs whose last status check succeeded. Snapshots are kept compressed: all from the last
 48 hours, then hourly for 30 days, then daily.
 
+### What you were doing, and where you ran something
+
+`vmdesk show` (with or without `--cached`) starts with a one-line summary of the current work,
+under the note you left on the VM's latest work session, if any:
+
+```text
+note: waiting on CI for the group2 fix
+pytest tests/group2 in regal @ group2-fix (3 modified) · tmux nightly-debug · since 21:07
+```
+
+The line comes from the latest snapshot. Its subject is the first of these that exists, the
+newest first within each:
+
+1. A command running in an attached tmux session.
+2. An attached tmux session.
+3. A command running in any tmux pane.
+4. A command started from a login shell, as in a plain SSH session.
+5. Any other process that the timeline records.
+6. A detached tmux session.
+
+Login shells and tmux itself are never the subject. The repo is the one holding the command's
+working directory (else the directory is shown), with its branch and uncommitted changes. Running
+containers whose compose project or name is the repo's name are listed. "since" is when the
+current work session started, else when the command or tmux session started.
+
+A work session is a stretch of activity on one VM: every timeline event except status changes and
+gaps. An idle stretch of more than 2 hours starts a new session. Changes that a poll noticed only
+after a gap do not count, because they happened at some unknown time inside the gap. Sessions
+are kept up to date as events arrive, including agent history that arrives late, which can merge
+two sessions into one. A merged session keeps the older one's id, title and notes.
+
+```sh
+vmdesk sessions lab-07 -n 20                           # newest first
+vmdesk sessions rename lab-07 01a153da nightly debug   # by id or its first characters
+vmdesk note lab-07 waiting on CI for the group2 fix    # pinned to the latest session
+vmdesk note lab-07 flaky N4 test --session 01a13ee1    # or to another one
+vmdesk notes lab-07
+vmdesk search upf-tests --since 7d -n 20               # every VM, newest first
+```
+
+```text
+ID        STARTED      ENDED    DURATION  TITLE          REPOS                 COMMANDS
+01a153da  10-19 16:40  ongoing  55m       nightly debug  regal @ group2-fix    pytest tests/group2 ×3 · make build
+01a13ee1  10-15 14:55  17:15    2h19m                    5G_Test_Suites        claude · tmux a -t uegnb-16
+```
+
+A session id's first 8 characters tell it apart from the VM's other sessions. A session lists the
+repos it touched (with the branches in its git events), the commands started in it (most runs
+first), its containers and its tmux sessions.
+
+`search` looks through the command lines, directories, repos, branches, commit subjects,
+containers, tmux sessions, and listening ports and processes of every event. Each word must match the start
+of a word in the event: `upf-tests` finds `pytest upf-tests/n4.py`, and `http.ser` finds
+`python3 -m http.server`. Quotes and operators such as `OR` are ordinary words. `--since` takes an
+age such as `30m`, `12h`, `7d` or `2w`.
+
 ### On-VM agent
 
 The SSH collector only sees what exists at each poll. The agent runs on the VM as your user,
@@ -320,6 +376,12 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7878/api/v1/vms
 | `POST` | `/api/v1/vms/{id}/snapshot` | Collect a snapshot now (502 if unreachable) |
 | `GET` | `/api/v1/vms/{id}/events` | Timeline, newest first. `?limit=` (default 100), `?before=` (RFC 3339) |
 | `GET` | `/api/v1/vms/{id}/agent` | The VM's agent: id, version, last seq, contact times and state (404 if none) |
+| `GET` | `/api/v1/vms/{id}/sessions` | Work sessions, newest first, with `ongoing`. `?limit=` (default 20, max 500) |
+| `PATCH` | `/api/v1/sessions/{id}` | Set a session's title. Body: `{"title": "..."}`; `""` clears it |
+| `GET` | `/api/v1/vms/{id}/notes` | Notes, newest first |
+| `POST` | `/api/v1/vms/{id}/notes` | Add a note. Body: `{"body": "...", "session": "<id>"}`. Without `session` it goes to the latest session; `null` pins it to none |
+| `GET` | `/api/v1/vms/{id}/current-work` | The current-work summary and its `line` (404 before the first snapshot) |
+| `GET` | `/api/v1/search` | Events on every VM matching `?q=`, newest first. `?since=` (RFC 3339), `?limit=` (default 50, max 500) |
 
 Create a VM that is reached through another one:
 
@@ -345,9 +407,9 @@ Errors are always JSON, `{"error": "<code>", "message": "..."}`:
 | --- | --- | --- |
 | 400 | `bad_request` | Malformed JSON, unknown field, bad UUID or query |
 | 401 | `unauthorized` | Missing or wrong token |
-| 404 | `not found` | No such VM |
+| 404 | `not found` | No such VM or session |
 | 409 | `conflict` | Duplicate name (case-insensitive), jump-host loop, or deleting a VM still used as a jump host |
-| 422 | `invalid` | Validation failure, e.g. bad name, no endpoints, unknown jump host |
+| 422 | `invalid` | Validation failure, e.g. bad name, no endpoints, unknown jump host, empty note, a session of another VM, a search with no letters or digits |
 | 500 | `internal` | Anything else; details go to the server log only |
 
 ## Repository layout
@@ -356,7 +418,8 @@ Errors are always JSON, `{"error": "<code>", "message": "..."}`:
 crates/
   vmdesk-proto/       Snapshot, event and wire-protocol types shared with the agent
   vmdesk-core/        Domain model and traits: Provider, HopConnector, Collector
-  vmdesk-db/          SQLite pool, migrations, inventory CRUD, provider sync
+  vmdesk-db/          SQLite pool, migrations, inventory CRUD, provider sync, work sessions,
+                      notes, event search
   vmdesk-providers/   Static and SSH config providers
   vmdesk-api/         Actix Web routes and token auth
   vmdesk-daemon/      The `vmdesk` binary: CLI and server
@@ -364,7 +427,7 @@ crates/
   vmdesk-transport/   SSH transport: path builder, session cache, host keys, auth
   vmdesk-reach/       Route lookup, reachability checks, network-change monitor
   vmdesk-collect/     Probe script and parsers, snapshot diff to events, SSH collector, agent
-                      sync and install, poller
+                      sync and install, poller, current-work summary
   vmdesk-agent/       On-VM agent (M6, stub)
 migrations/           SQLx migrations, embedded at compile time
 ```

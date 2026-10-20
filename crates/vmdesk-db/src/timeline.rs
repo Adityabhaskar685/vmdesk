@@ -2,12 +2,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 use uuid::Uuid;
 use vmdesk_core::VmId;
 use vmdesk_proto::{EventKind, Snapshot};
 
-use crate::{Db, Error, Result};
+use crate::{Db, Error, Result, sessions};
 
 /// Everything kept for 48 hours, then the newest per hour up to 30 days, then per day.
 const KEEP_ALL_MS: i64 = 48 * 3600 * 1000;
@@ -73,6 +74,13 @@ pub(crate) fn event_data(kind: &EventKind) -> Result<serde_json::Value> {
         .map_or(serde_json::Value::Null, serde_json::Value::take))
 }
 
+/// An event read back from its `kind` and `data_json` columns. `None` for kinds that
+/// are not an [`EventKind`], such as the laptop's `status_changed`.
+pub(crate) fn parse_event(kind: &str, data_json: &str) -> Option<EventKind> {
+    let kind = serde_json::Value::String(kind.to_owned());
+    serde_json::from_str(&format!(r#"{{"kind":{kind},"data":{data_json}}}"#)).ok()
+}
+
 /// Appends one event with the next sequence number for `(vm, source)`.
 pub(crate) async fn insert_event(
     conn: &mut SqliteConnection,
@@ -99,7 +107,8 @@ pub(crate) async fn insert_event(
 }
 
 impl Db {
-    /// Stores a snapshot and the events derived from it, then applies retention.
+    /// Stores a snapshot and the events derived from it, updates the work sessions those
+    /// events touch, then applies retention.
     pub async fn record_snapshot(
         &self,
         vm: VmId,
@@ -128,24 +137,17 @@ impl Db {
         for (ts, kind) in events {
             insert_event(&mut tx, vm, source, *ts, kind.name(), &event_data(kind)?).await?;
         }
+        if !events.is_empty() {
+            let window = sessions::window(events.iter().map(|(t, k)| (t.timestamp_millis(), k)));
+            sessions::refresh_in(&mut tx, vm, window).await?;
+        }
         prune(&mut tx, vm, taken_at.timestamp_millis()).await?;
         tx.commit().await?;
         Ok(())
     }
 
     pub async fn latest_snapshot(&self, vm: VmId) -> Result<Option<Snapshot>> {
-        let blob: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT data_zstd FROM snapshots WHERE vm_id = ? ORDER BY taken_at DESC LIMIT 1",
-        )
-        .bind(vm.to_string())
-        .fetch_optional(self.pool())
-        .await?;
-        blob.map(|b| {
-            let json = zstd::decode_all(b.as_slice())
-                .map_err(|e| Error::Corrupt(format!("decompressing snapshot: {e}")))?;
-            Ok(serde_json::from_slice(&json)?)
-        })
-        .transpose()
+        latest_snapshot_in(&mut *self.pool().acquire().await?, vm).await
     }
 
     pub async fn snapshot_count(&self, vm: VmId) -> Result<i64> {
@@ -174,20 +176,39 @@ impl Db {
         .bind(i64::from(limit))
         .fetch_all(self.pool())
         .await?;
-        rows.iter()
-            .map(|r| {
-                let ms: i64 = r.try_get("ts")?;
-                Ok(TimelineEntry {
-                    source: r.try_get("source")?,
-                    seq: r.try_get("seq")?,
-                    ts: DateTime::from_timestamp_millis(ms)
-                        .ok_or_else(|| Error::Corrupt(format!("bad time {ms}")))?,
-                    kind: r.try_get("kind")?,
-                    data: serde_json::from_str(&r.try_get::<String, _>("data_json")?)?,
-                })
-            })
-            .collect()
+        rows.iter().map(entry_from_row).collect()
     }
+}
+
+pub(crate) async fn latest_snapshot_in(
+    conn: &mut SqliteConnection,
+    vm: VmId,
+) -> Result<Option<Snapshot>> {
+    let blob: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT data_zstd FROM snapshots WHERE vm_id = ? ORDER BY taken_at DESC LIMIT 1",
+    )
+    .bind(vm.to_string())
+    .fetch_optional(&mut *conn)
+    .await?;
+    blob.map(|b| {
+        let json = zstd::decode_all(b.as_slice())
+            .map_err(|e| Error::Corrupt(format!("decompressing snapshot: {e}")))?;
+        Ok(serde_json::from_slice(&json)?)
+    })
+    .transpose()
+}
+
+/// An `events` row with the columns `source, seq, ts, kind, data_json`.
+pub(crate) fn entry_from_row(r: &SqliteRow) -> Result<TimelineEntry> {
+    let ms: i64 = r.try_get("ts")?;
+    Ok(TimelineEntry {
+        source: r.try_get("source")?,
+        seq: r.try_get("seq")?,
+        ts: DateTime::from_timestamp_millis(ms)
+            .ok_or_else(|| Error::Corrupt(format!("bad time {ms}")))?,
+        kind: r.try_get("kind")?,
+        data: serde_json::from_str(&r.try_get::<String, _>("data_json")?)?,
+    })
 }
 
 /// Retention (spec section 9): keeps every snapshot from the last 48 hours, then the

@@ -15,6 +15,8 @@ mod fake_vm;
 pub mod probe;
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "remote")]
+pub mod work;
 
 pub use diff::diff;
 pub use probe::{PROBE_SCRIPT, parse, probe_command};

@@ -5,6 +5,7 @@ mod askpass;
 mod remote;
 mod show;
 mod status;
+mod work;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -166,6 +167,46 @@ enum Cmd {
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: u32,
     },
+    /// List a VM's work sessions, newest first: stretches of activity split by idle
+    /// gaps of more than 2 hours.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    Sessions {
+        #[command(subcommand)]
+        cmd: Option<work::SessionsCmd>,
+        /// VM name, alias or id.
+        #[arg(required = true)]
+        vm: Option<String>,
+        /// Number of most recent sessions.
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: u32,
+    },
+    /// Write a note on a VM, pinned to its latest work session.
+    Note {
+        /// VM name, alias or id.
+        vm: String,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+        /// Pin it to this session instead (its id, or the start of it).
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+    },
+    /// List a VM's notes, newest first.
+    Notes {
+        /// VM name, alias or id.
+        vm: String,
+    },
+    /// Find events on every VM by command line, directory, repo, branch, container,
+    /// tmux session or commit subject. Each word must match the start of a word.
+    Search {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// Only events this recent, e.g. 12h, 7d or 2w.
+        #[arg(long, value_name = "AGE", value_parser = work::parse_age)]
+        since: Option<chrono::Duration>,
+        /// Most recent matches shown.
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: u32,
+    },
     /// Install, upgrade, remove or sync the agent that records a VM's history while
     /// this laptop is away.
     Agent {
@@ -242,6 +283,25 @@ fn main() -> anyhow::Result<ExitCode> {
             Cmd::Timeline { vm, limit } => {
                 show::timeline(&open_db(&data_dir).await?, &vm, limit).await?;
             }
+            Cmd::Sessions { cmd, vm, limit } => {
+                let db = open_db(&data_dir).await?;
+                match (cmd, vm) {
+                    (Some(work::SessionsCmd::Rename { vm, id, title }), _) => {
+                        work::rename(&db, &vm, &id, &title).await?;
+                    }
+                    (None, Some(vm)) => work::sessions(&db, &vm, limit).await?,
+                    (None, None) => unreachable!("clap requires a VM without a subcommand"),
+                }
+            }
+            Cmd::Note { vm, text, session } => {
+                work::note(&open_db(&data_dir).await?, &vm, &text, session.as_deref()).await?;
+            }
+            Cmd::Notes { vm } => work::notes(&open_db(&data_dir).await?, &vm).await?,
+            Cmd::Search {
+                query,
+                since,
+                limit,
+            } => work::search(&open_db(&data_dir).await?, &query, since, limit).await?,
             Cmd::Agent { cmd } => agent::run(&open_db(&data_dir).await?, cmd).await?,
             Cmd::Status { vms, watch } => {
                 status::status(&open_db(&data_dir).await?, &vms, watch).await?;
