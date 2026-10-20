@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+vmdesk-proto.workspace = true
 
 [lints]
 workspace = true
