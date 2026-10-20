@@ -7,7 +7,7 @@ use gpui::{
     ResizeEdge, Size, Window, canvas, div, point, prelude::*, px, rgb,
 };
 
-use crate::ui::color;
+use crate::theme::{color, text};
 
 /// Width of the strip along each window edge that resizes the window.
 const EDGE: Pixels = px(6.);
@@ -94,11 +94,11 @@ fn control(id: &'static str, glyph: &'static str, close: bool) -> gpui::Stateful
         .flex()
         .items_center()
         .justify_center()
-        .text_sm()
-        .text_color(rgb(color::DIM))
+        .text_size(text::BODY)
+        .text_color(rgb(color::TEXT_SECONDARY))
         .cursor_pointer()
         .hover(move |s| {
-            s.bg(rgb(if close { color::RED } else { color::ROW_HOVER }))
+            s.bg(rgb(if close { color::RED } else { color::HOVER }))
                 .text_color(rgb(color::TEXT))
         })
         .child(glyph)
@@ -117,7 +117,7 @@ pub fn title_bar(window: &Window, title: String) -> Option<AnyElement> {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .bg(rgb(color::PANEL))
+            .bg(rgb(color::SURFACE))
             .border_b_1()
             .border_color(rgb(color::BORDER))
             .child(
@@ -128,8 +128,8 @@ pub fn title_bar(window: &Window, title: String) -> Option<AnyElement> {
                     .flex()
                     .items_center()
                     .px_3()
-                    .text_sm()
-                    .text_color(rgb(color::DIM))
+                    .text_size(text::BODY)
+                    .text_color(rgb(color::TEXT_SECONDARY))
                     .child(title)
                     .on_mouse_down(MouseButton::Left, |e, window, _| {
                         if e.click_count >= 2 {

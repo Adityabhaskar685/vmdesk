@@ -20,6 +20,7 @@ gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "fs", "process"] }
 anyhow.workspace = true
 chrono.workspace = true
+serde_json.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

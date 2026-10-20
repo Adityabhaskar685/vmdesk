@@ -7,7 +7,13 @@ mod chrome;
 mod field;
 mod form;
 mod gpu;
+mod human;
+mod icon;
+mod kit;
+mod overview;
 mod terminal;
+mod theme;
+mod timeline_view;
 mod ui;
 
 use std::path::PathBuf;

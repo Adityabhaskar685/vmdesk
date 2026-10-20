@@ -29,7 +29,7 @@ fn env() -> Env {
 /// VM `lab` on 127.0.0.1:1, which the last check found online and whose agent state is
 /// `agent`. With `version`, it also has an agent row, last synced 130 s ago. Collecting
 /// it fails fast (port 1 refuses), so opening it changes nothing stored.
-fn seed_vm(env: &Env, agent: AgentState, version: Option<&str>) {
+fn seed_vm(env: &Env, agent: AgentState, version: Option<&str>) -> VmId {
     let db = env.backend.db.clone();
     env.rt.block_on(async {
         let vm = db
@@ -75,7 +75,8 @@ fn seed_vm(env: &Env, agent: AgentState, version: Option<&str>) {
             .await
             .unwrap();
         }
-    });
+        vm.id
+    })
 }
 
 /// A window with `lab` open, once the collect that opening starts has given up.
@@ -306,14 +307,16 @@ fn a_vm_without_an_agent_offers_to_install_one(cx: &mut TestAppContext) {
     seed_vm(&env, AgentState::Unknown, None);
     let (view, cx) = open_lab(cx, &env);
 
-    assert!(shown(cx, "agent: no agent"));
+    assert!(shown(cx, "agent: No agent"));
     assert!(shown(cx, "lab: online"), "no agent, so no `+ agent`");
     assert!(shown(cx, "headline: online"));
+
+    click(cx, "more");
+    assert!(shown(cx, "agent-install"));
     assert!(!shown(cx, "agent-remove"));
 
-    // Without a build to upload (or a VM that answers), the error is shown and the
-    // button comes back.
     click(cx, "agent-install");
+    assert!(!shown(cx, "menu"), "choosing an action closes the menu");
     wait(cx, &view, "the install to fail", |v| {
         v.busy.is_none()
             && v.message
@@ -325,6 +328,7 @@ fn a_vm_without_an_agent_offers_to_install_one(cx: &mut TestAppContext) {
         err && message.starts_with("Install agent failed: "),
         "{message}"
     );
+    click(cx, "more");
     assert!(shown(cx, "agent-install"));
 }
 
@@ -334,21 +338,28 @@ fn a_collecting_agent_shows_online_plus_agent_and_asks_before_removal(cx: &mut T
     seed_vm(&env, AgentState::Ok, Some("0.1.0"));
     let (_view, cx) = open_lab(cx, &env);
 
-    assert!(shown(cx, "agent: agent ok · 0.1.0 · synced 2m ago"));
+    assert!(shown(cx, "agent: Agent 0.1.0 · recording · synced 2m ago"));
     assert!(shown(cx, "lab: online + agent"));
     assert!(shown(cx, "headline: online + agent"));
-    assert!(!shown(cx, "agent-install") && !shown(cx, "agent-upgrade"));
 
+    click(cx, "more");
+    assert!(!shown(cx, "agent-install") && !shown(cx, "agent-upgrade"));
     click(cx, "agent-remove");
     assert!(shown(cx, "agent-remove-panel"), "asks first");
     assert!(shown(cx, "agent-remove-yes"));
-    assert!(!shown(cx, "agent-remove"), "one way to remove at a time");
+    click(cx, "more");
+    assert!(
+        shown(cx, "menu") && !shown(cx, "agent-remove"),
+        "one way to remove at a time"
+    );
+    cx.simulate_keystrokes("escape");
 
     click(cx, "agent-remove-no");
     assert!(!shown(cx, "agent-remove-panel"));
+    click(cx, "more");
     assert!(shown(cx, "agent-remove"));
     assert!(
-        shown(cx, "agent: agent ok · 0.1.0 · synced 2m ago"),
+        shown(cx, "agent: Agent 0.1.0 · recording · synced 2m ago"),
         "nothing removed"
     );
 }
@@ -359,11 +370,114 @@ fn an_outdated_agent_offers_an_upgrade(cx: &mut TestAppContext) {
     seed_vm(&env, AgentState::Outdated, Some("0.0.9"));
     let (_view, cx) = open_lab(cx, &env);
 
-    assert!(shown(cx, "agent: agent outdated 0.0.9 · synced 2m ago"));
+    assert!(shown(cx, "agent: Agent 0.0.9 · outdated · synced 2m ago"));
     assert!(
         shown(cx, "lab: online + agent"),
         "an outdated agent still collects"
     );
+    click(cx, "more");
     assert!(shown(cx, "agent-upgrade"));
     assert!(!shown(cx, "agent-remove"));
+}
+
+#[gpui::test]
+fn the_more_menu_opens_and_closes(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+    view.update_in(cx, |v, window, cx| {
+        let focus = v.focus.clone();
+        window.focus(&focus, cx);
+    });
+
+    assert!(!shown(cx, "menu"));
+    click(cx, "more");
+    assert!(shown(cx, "menu") && shown(cx, "edit") && shown(cx, "remove"));
+
+    cx.simulate_keystrokes("x");
+    cx.simulate_keystrokes("escape");
+    assert!(!shown(cx, "menu"), "Escape closes the menu");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.filter.clone()),
+        "x",
+        "and leaves the filter alone"
+    );
+    cx.simulate_keystrokes("escape");
+
+    click(cx, "more");
+    let outside = cx.debug_bounds("tab-timeline").unwrap().center();
+    cx.simulate_click(outside, Modifiers::none());
+    assert!(!shown(cx, "menu"), "a click outside closes it");
+    assert!(
+        view.read_with(cx, |v, _| v.tab == Tab::Overview),
+        "and does not reach what is under it"
+    );
+
+    click(cx, "more");
+    click(cx, "more");
+    assert!(!shown(cx, "menu"), "the button toggles it");
+
+    click(cx, "more");
+    click(cx, "remove");
+    assert!(!shown(cx, "menu") && shown(cx, "remove-yes"), "asks first");
+    click(cx, "remove-no");
+    assert!(!shown(cx, "remove-yes"));
+
+    click(cx, "more");
+    click(cx, "edit");
+    assert!(
+        view.read_with(cx, |v, _| v
+            .add
+            .as_ref()
+            .is_some_and(|f| f.editing.is_some())),
+        "Edit opens the form filled in"
+    );
+}
+
+#[gpui::test]
+fn the_timeline_reads_as_sentences_under_day_headers(cx: &mut TestAppContext) {
+    let env = env();
+    let vm = seed_vm(&env, AgentState::Unknown, None);
+    let db = env.backend.db.clone();
+    let from = Utc::now() - chrono::Duration::days(1);
+    let to = from + chrono::Duration::minutes(5 * 60 + 32);
+    env.rt.block_on(async {
+        db.set_agent_state(vm, AgentState::Ok).await.unwrap();
+        let snapshot = vmdesk_proto::Snapshot {
+            taken_at: Some(Utc::now()),
+            ..vmdesk_proto::Snapshot::default()
+        };
+        let events = [(from, vmdesk_proto::EventKind::Gap { from, to })];
+        db.record_snapshot(vm, "ssh", &snapshot, &events)
+            .await
+            .unwrap();
+    });
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "tab-timeline");
+    assert!(shown(cx, "day: Today"));
+    assert!(shown(cx, "event: Agent connected and recording"));
+    assert!(shown(cx, "day: Yesterday"));
+    assert!(shown(cx, "event: Not observed for 5h 32m"));
+
+    let gap = view.read_with(cx, |v, _| {
+        let days = crate::timeline_view::present(
+            &v.detail.as_ref().unwrap().timeline,
+            chrono::Local::now(),
+        );
+        days.into_iter()
+            .flat_map(|d| d.rows)
+            .find(|r| crate::timeline_view::text_of(&r.title).starts_with("Not observed"))
+            .and_then(|r| r.detail)
+            .map(|d| crate::timeline_view::text_of(&d))
+            .unwrap()
+    });
+    let local =
+        |t: chrono::DateTime<Utc>| t.with_timezone(&chrono::Local).format("%H:%M").to_string();
+    assert!(
+        gap.starts_with(&local(from))
+            && gap.ends_with(&local(to))
+            && !gap.contains(&from.format("%Y-%m-%d").to_string()),
+        "local times, no ISO timestamp: {gap}"
+    );
 }

@@ -9031,6 +9031,7 @@ dependencies = [
  "dirs 7.0.0",
  "gpui",
  "gpui_platform",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
