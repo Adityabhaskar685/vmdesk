@@ -59,20 +59,33 @@ target/release/vmdesk-app lab-07     # open with a VM selected (name, alias or i
 ```
 
 The left side lists every VM with a status dot (green online, amber SSH failing, red no route,
-grey not checked) and the network interface that reaches it. The right side shows the selected
-VM: its address and path, status, an **Overview** of its last snapshot (system, tmux, containers,
-listening ports, repos, processes) and its **Timeline**. Type anywhere to filter the list, use ↑/↓
-to move through it and Esc to clear the filter.
+grey not checked) and the network interface that reaches it. Type anywhere to filter the list, use
+↑/↓ to move through it and Esc to clear the filter.
+
+The right side shows the selected VM. Its header has the address and path, a status pill
+(`Online + agent`, `SSH failing`, ...) with the SSH result, route and check time, and the agent's
+state. Below it are two tabs:
+
+- **Overview** shows the last snapshot as cards: system (uptime, load, memory and disks), tmux
+  sessions, containers, listening ports, git repositories and processes.
+- **Timeline** tells each recorded event as a sentence under a day header (`Today`, `Yesterday`,
+  `Thu 15 Oct`), at its local time, with where it came from (`agent`, `ssh` or `laptop`). For
+  example, `Started python3 -m http.server 18766 in /tmp`, `SSH lost (timeout) via wlo1`, or
+  `Not observed for 5h 32m`. `Agent connected and recording` marks the first sync after an install.
+  Identical events in the same minute, such as many processes exiting at once, show as one row
+  with a count.
 
 Managing VMs:
 
-- **+ Add VM** opens a form: name, address, port, user, how to log in (ssh-agent and default keys,
+- **Add VM** opens a form: name, address, port, user, how to log in (ssh-agent and default keys,
   a key file, or a password kept in the OS keychain) and an optional jump host. Tab moves between
   fields, Ctrl+V pastes, Enter saves, Esc cancels. The new VM is checked right away.
-- **Edit** opens the same form filled in. Leave the password empty to keep the stored one; the
+- The **⋯** (More) button beside **Open terminal** opens a menu with **Edit VM…**, **Remove VM…**
+  and the agent action. Esc or a click outside closes it.
+- **Edit VM…** opens the same form filled in. Leave the password empty to keep the stored one; the
   address and jump host are only saved if you change them, so editing an imported VM's user
   leaves its imported connection alone.
-- **Remove** deletes the VM from VMDesk after a confirmation, with its history, host keys and
+- **Remove VM…** deletes the VM from VMDesk after a confirmation, with its history, host keys and
   stored password. The VM itself is not touched. A VM that others jump through cannot be removed.
 
 Working with a VM:
@@ -89,20 +102,25 @@ Working with a VM:
   - For a VM with a stored password, `ssh` gets it from the keychain through `vmdesk askpass` (an
     `SSH_ASKPASS` helper), so you are not asked. Only the first password prompt is answered; other
     prompts, such as accepting a new host key or a retry after a wrong password, are shown to you.
-- The [on-VM agent](#on-vm-agent) has its own line next to the status: `agent ok · 0.1.0 · synced 2m
-  ago`, `agent outdated 0.0.9 · synced 2m ago`, `agent not running (collecting over SSH)`,
-  `agent error: …`, or `no agent`. While the agent collects, the list and the header say
-  `online + agent`, as `vmdesk list` does. The line has one button:
+- The [on-VM agent](#on-vm-agent) has its own item next to the status: `Agent 0.1.0 · recording ·
+  synced 2m ago`, `Agent 0.0.9 · outdated · synced 2m ago`, `Agent not running · the next poll
+  starts it`, `Agent not answering properly · collecting over SSH`, or `No agent`. While the agent
+  collects, the list and the header say `online + agent`, as `vmdesk list` does. The More menu
+  has one agent action:
   - **Install agent** when the VM has none, or the binary is gone from the VM. It runs the same
     steps as `vmdesk agent install`, with the build from `VMDESK_AGENT_BIN`, else
     `vmdesk-agent-x86_64` next to `vmdesk-app`.
   - **Upgrade agent** when the agent is outdated: the same steps with this build.
-  - **Remove agent** otherwise. It asks first, then stops and deletes the agent on the VM. The
+  - **Remove agent…** otherwise. It asks first, then stops and deletes the agent on the VM. The
     VM's history on this laptop is kept.
 - **Review host key…** appears when a VM's host key is new or has changed. A new key is shown with
   its fingerprint and whether it matches your `~/.ssh/known_hosts`; **Trust this key** stores
   exactly that key. A changed key can be forgotten (only after a reinstall) and the new one
   reviewed.
+
+Text is set in Noto Sans and Noto Sans Mono (the `fonts-noto-core` and `fonts-noto-mono` packages
+on Ubuntu). GPUI cannot pick bold or medium weights from a variable font such as Ubuntu's own, so
+headings would lose their weight in it. Without Noto, another installed font is used.
 
 The window draws its own title bar, since GNOME does not decorate Wayland windows: drag it to
 move, double-click to maximise, right-click for the window menu, use the minimise / maximise /
