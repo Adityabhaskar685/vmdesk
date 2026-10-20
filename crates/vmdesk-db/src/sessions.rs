@@ -521,7 +521,7 @@ impl Db {
     /// Re-derives all of `vm`'s sessions from its events. Event writes keep the
     /// sessions they touch current themselves; running this again changes nothing.
     pub async fn refresh_sessions(&self, vm: VmId) -> Result<()> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         refresh_in(&mut tx, vm, EVERYTHING).await?;
         tx.commit().await?;
         Ok(())

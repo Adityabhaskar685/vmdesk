@@ -132,7 +132,7 @@ impl Db {
 
         let id = VmId::new();
         let now = now_ms();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write().await?;
         check_paths(&mut tx, id, Origin::User, &paths).await?;
         sqlx::query(
             "INSERT INTO vms (id, provider_id, external_ref, name, username, credential_ref, \
@@ -160,7 +160,7 @@ impl Db {
     }
 
     pub async fn update_vm(&self, id: VmId, patch: VmPatch) -> Result<Vm> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write().await?;
         let current = get_in(&mut tx, id).await?;
         let name = match &patch.name {
             Some(n) => validate_name(n)?,
@@ -226,7 +226,7 @@ impl Db {
 
     /// Deletes a VM and its history. Refused while other VMs jump through it.
     pub async fn delete_vm(&self, id: VmId) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write().await?;
         let dependents: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT v.name FROM hops h \
             JOIN connection_paths cp ON cp.id = h.path_id \

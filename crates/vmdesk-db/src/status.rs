@@ -23,7 +23,7 @@ impl Db {
     /// its stored agent state whatever `status.agent` says, so a reachability check
     /// that raced an agent sync cannot undo it. A status for a removed VM is dropped.
     pub async fn save_status(&self, status: &VmStatus) -> Result<Option<VmStatus>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         let previous = status_in(&mut tx, status.vm).await?;
         let status = VmStatus {
             agent: previous.as_ref().map_or(status.agent, |p| p.agent),
@@ -59,7 +59,7 @@ impl Db {
     /// the change is also a `status_changed` event. A VM that was never checked gets
     /// a status with SSH `not_checked`.
     pub async fn set_agent_state(&self, vm: VmId, agent: AgentState) -> Result<Option<AgentState>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         let previous = status_in(&mut tx, vm).await?;
         let saved = sqlx::query(
             "INSERT INTO status (vm_id, ssh, agent, checked_at) VALUES (?, ?, ?, ?) \

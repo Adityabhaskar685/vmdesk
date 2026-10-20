@@ -121,7 +121,7 @@ impl Db {
         let blob = zstd::encode_all(json.as_slice(), ZSTD_LEVEL)
             .map_err(|e| Error::Corrupt(format!("compressing snapshot: {e}")))?;
 
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write().await?;
         sqlx::query(
             "INSERT INTO snapshots (id, vm_id, taken_at, source, schema_version, data_zstd) \
             VALUES (?, ?, ?, ?, ?, ?)",
