@@ -5,43 +5,39 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use gpui::{
-    AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, SharedString, Window, div,
-    prelude::*, px, rgb,
+    AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString, Window,
+    deferred, div, prelude::*, px, rgb, transparent_black,
 };
-use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus, human_duration};
-use vmdesk_db::TimelineEntry;
-use vmdesk_proto::Snapshot;
+use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus};
 
 use crate::agent_view::{AgentAction, AgentView};
 use crate::backend::{Backend, Detail, Inventory, KeyProblem};
 use crate::form::AddForm;
+use crate::human::ago;
+use crate::icon::{Icon, icon};
+use crate::kit::{
+    Button, button, callout, dot, focus_ring, icon_button, label, menu, menu_action, menu_item,
+    menu_separator, pill,
+};
+use crate::theme::{CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint};
 
 /// How often the list re-reads the database (the monitor writes status there).
 const RELOAD: Duration = Duration::from_secs(5);
 /// The selected VM is re-collected this often while it is open (spec section 9).
 const OPEN_VM_INTERVAL: Duration = Duration::from_mins(2);
-const MONO: &str = "DejaVu Sans Mono";
-
-#[allow(clippy::unreadable_literal)] // hex colours read best as written
-pub(crate) mod color {
-    pub const BG: u32 = 0x1b1d21;
-    pub const PANEL: u32 = 0x22252a;
-    pub const ROW_HOVER: u32 = 0x2b2f35;
-    pub const SELECTED: u32 = 0x2f3b4d;
-    pub const BORDER: u32 = 0x33373e;
-    pub const TEXT: u32 = 0xdcdfe4;
-    pub const DIM: u32 = 0x8a919c;
-    pub const ACCENT: u32 = 0x6ea8fe;
-    pub const GREEN: u32 = 0x5fb878;
-    pub const AMBER: u32 = 0xe0a84e;
-    pub const RED: u32 = 0xe06c75;
-    pub const GREY: u32 = 0x6b7280;
-}
+const SIDEBAR_WIDTH: f32 = 280.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Overview,
     Timeline,
+}
+
+/// A removal waiting for the user to confirm it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    RemoveVm(VmId),
+    RemoveAgent(VmId),
 }
 
 pub struct AppView {
@@ -61,10 +57,9 @@ pub struct AppView {
     pending_select: Option<String>,
     /// The "Add VM" form, while it is open.
     pub(crate) add: Option<AddForm>,
-    /// VM waiting for the user to confirm its removal.
-    confirm_remove: Option<VmId>,
-    /// VM whose agent is waiting for the user to confirm its removal.
-    confirm_agent_remove: Option<VmId>,
+    confirm: Option<Confirm>,
+    /// The header's "More" menu is open.
+    menu_open: bool,
     /// A host key the user is deciding on, for the selected VM.
     key_prompt: Option<KeyProblem>,
 }
@@ -85,8 +80,8 @@ impl AppView {
             message: None,
             pending_select: open_vm,
             add: None,
-            confirm_remove: None,
-            confirm_agent_remove: None,
+            confirm: None,
+            menu_open: false,
             key_prompt: None,
         }
     }
@@ -180,8 +175,8 @@ impl AppView {
         self.selected = Some(id);
         self.detail = None;
         self.key_prompt = None;
-        self.confirm_remove = None;
-        self.confirm_agent_remove = None;
+        self.confirm = None;
+        self.menu_open = false;
         self.collected_at = None;
         self.message = None;
         self.load_detail(id, cx);
@@ -282,7 +277,7 @@ impl AppView {
         .detach();
     }
 
-    /// Typing anywhere filters the list; Backspace edits, Escape clears.
+    /// Typing anywhere filters the list; Backspace edits, Escape closes the menu or clears.
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         if let Some(form) = &self.add {
@@ -302,6 +297,7 @@ impl AppView {
             return;
         }
         match ks.key.as_str() {
+            "escape" if self.menu_open => self.menu_open = false,
             "up" | "down" => {
                 self.step_selection(ks.key == "up", cx);
                 return;
@@ -451,7 +447,7 @@ impl AppView {
     }
 
     fn remove(&mut self, id: VmId, cx: &mut Context<Self>) {
-        self.confirm_remove = None;
+        self.confirm = None;
         let job = self.backend.remove_vm(id);
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
@@ -472,7 +468,7 @@ impl AppView {
 
     /// Installs, upgrades or removes `id`'s agent, then reloads its status and detail.
     fn run_agent_action(&mut self, id: VmId, action: AgentAction, cx: &mut Context<Self>) {
-        self.confirm_agent_remove = None;
+        self.confirm = None;
         self.busy = Some(action.busy());
         let job: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>>>> =
             match action {
@@ -536,6 +532,17 @@ impl AppView {
     fn headline(&self, vm: &Vm) -> Option<Headline> {
         self.status.get(&vm.id).map(|s| s.headline(vm.lifecycle))
     }
+
+    /// The agent as the header shows it, once the detail (with the agent record) has loaded.
+    fn agent_view(&self, id: VmId) -> Option<AgentView> {
+        let state = self
+            .status
+            .get(&id)
+            .map_or(AgentState::Unknown, |s| s.agent);
+        self.detail
+            .as_ref()
+            .map(|d| AgentView::new(d.agent.as_ref(), state))
+    }
 }
 
 /// A VM by name, alias or id.
@@ -551,82 +558,107 @@ fn find_vm(vms: &[Vm], want: &str) -> Option<VmId> {
         .map(|v| v.id)
 }
 
-fn headline_color(h: Option<Headline>) -> u32 {
+fn headline_tone(h: Option<Headline>) -> Tone {
     match h {
-        Some(Headline::Online) => color::GREEN,
-        Some(Headline::SshFailing) => color::AMBER,
-        Some(Headline::NoRoute) => color::RED,
-        Some(Headline::Stopped | Headline::Unknown) | None => color::GREY,
+        Some(Headline::Online) => Tone::Good,
+        Some(Headline::SshFailing) => Tone::Warn,
+        Some(Headline::NoRoute) => Tone::Bad,
+        Some(Headline::Stopped | Headline::Unknown) | None => Tone::Neutral,
+    }
+}
+
+/// `online + agent` as a pill says it: `Online + agent`, `SSH failing`.
+fn sentence_case(label: &str) -> String {
+    if let Some(rest) = label.strip_prefix("ssh") {
+        return format!("SSH{rest}");
+    }
+    let mut chars = label.chars();
+    chars.next().map_or_else(String::new, |c| {
+        c.to_uppercase().chain(chars).collect::<String>()
+    })
+}
+
+fn ssh_fact(ssh: SshState) -> &'static str {
+    match ssh {
+        SshState::Ok => "SSH ok",
+        SshState::AuthFailed => "SSH login refused",
+        SshState::HostKey => "Host key needs review",
+        SshState::Refused => "SSH connection refused",
+        SshState::Timeout => "SSH timed out",
+        SshState::NoRoute => "No route",
+        SshState::Error => "SSH error",
+        SshState::NotChecked => "SSH not checked",
     }
 }
 
 /// Confirmation before removing a VM.
 fn remove_panel(vm: &Vm, cx: &mut Context<AppView>) -> gpui::Div {
     let id = vm.id;
-    div()
-        .mt_1()
-        .p_2()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(color::RED))
-        .flex()
-        .items_center()
-        .gap_3()
-        .child(div().flex_1().text_sm().child(format!(
+    callout(Tone::Bad)
+        .child(div().flex_1().min_w_0().child(format!(
             "Remove {} from VMDesk? Its history, host keys and stored password are deleted; the VM itself is not touched.",
             vm.name
         )))
-        .child(button("remove-yes", "Remove").on_click(cx.listener(move |this, _, _, cx| this.remove(id, cx))))
-        .child(button("remove-no", "Cancel").on_click(cx.listener(|this, _, _, cx| {
-            this.confirm_remove = None;
-            cx.notify();
-        })))
+        .child(
+            button(Button::Secondary, "remove-no")
+                .child("Cancel")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.confirm = None;
+                    cx.notify();
+                })),
+        )
+        .child(
+            button(Button::Danger, "remove-yes")
+                .child("Remove")
+                .on_click(cx.listener(move |this, _, _, cx| this.remove(id, cx))),
+        )
 }
 
 /// Confirmation before removing a VM's agent.
 fn agent_remove_panel(vm: &Vm, cx: &mut Context<AppView>) -> gpui::Div {
     let id = vm.id;
-    div()
+    callout(Tone::Warn)
         .debug_selector(|| "agent-remove-panel".to_owned())
-        .mt_1()
-        .p_2()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(color::AMBER))
-        .flex()
-        .items_center()
-        .gap_3()
-        .child(div().flex_1().text_sm().child(format!(
+        .child(div().flex_1().min_w_0().child(format!(
             "Remove the agent from {}? It is stopped and deleted on the VM, and the VM is collected over SSH again. Its history on this laptop is kept.",
             vm.name
         )))
-        .child(button("agent-remove-yes", "Remove agent").on_click(cx.listener(move |this, _, _, cx| {
-            this.run_agent_action(id, AgentAction::Remove, cx);
-        })))
-        .child(button("agent-remove-no", "Cancel").on_click(cx.listener(|this, _, _, cx| {
-            this.confirm_agent_remove = None;
-            cx.notify();
-        })))
+        .child(
+            button(Button::Secondary, "agent-remove-no")
+                .child("Cancel")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.confirm = None;
+                    cx.notify();
+                })),
+        )
+        .child(
+            button(Button::Danger, "agent-remove-yes")
+                .child("Remove agent")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.run_agent_action(id, AgentAction::Remove, cx);
+                })),
+        )
 }
 
 /// The host-key decision: trust a new key (with how to check it), or forget a changed one.
 fn key_panel(p: &KeyProblem, cx: &mut Context<AppView>) -> gpui::Div {
-    let (border, lines, action): (u32, Vec<String>, &'static str) = match p {
+    let (tone, lines, action, kind): (Tone, Vec<String>, &'static str, Button) = match p {
         KeyProblem::Unknown { name, key, known_hosts_match, .. } => (
-            color::AMBER,
+            Tone::Warn,
             vec![
                 format!("First connection to {name}. It presents this host key:"),
                 format!("{} {}", key.key_type, key.fingerprint),
                 match known_hosts_match {
-                    Some(true) => "✓ Matches the key in your ~/.ssh/known_hosts.".to_owned(),
-                    Some(false) => "✗ Differs from the key in your ~/.ssh/known_hosts. Do not trust it unless you know why.".to_owned(),
+                    Some(true) => "Matches the key in your ~/.ssh/known_hosts.".to_owned(),
+                    Some(false) => "Differs from the key in your ~/.ssh/known_hosts. Do not trust it unless you know why.".to_owned(),
                     None => "Check it on the VM: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub".to_owned(),
                 },
             ],
             "Trust this key",
+            Button::Primary,
         ),
         KeyProblem::Changed { name, expected, offered, .. } => (
-            color::RED,
+            Tone::Bad,
             vec![
                 format!("The host key of {name} has CHANGED."),
                 format!("trusted: {expected}"),
@@ -634,130 +666,37 @@ fn key_panel(p: &KeyProblem, cx: &mut Context<AppView>) -> gpui::Div {
                 "Expected only if the VM was reinstalled; otherwise someone may be intercepting the connection.".to_owned(),
             ],
             "Forget old key",
+            Button::Danger,
         ),
     };
-    div()
-        .mt_1()
-        .p_2()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(border))
-        .flex()
+    callout(tone)
         .flex_col()
-        .gap_1()
+        .items_start()
+        .gap(space::XS)
         .children(lines.into_iter().enumerate().map(|(i, l)| {
-            let line = div().text_sm().child(l);
-            if i == 1 { line.font_family(MONO) } else { line }
+            let line = div().child(l);
+            if i == 1 {
+                line.font_family(MONO).text_size(text::META)
+            } else {
+                line
+            }
         }))
         .child(
             div()
                 .flex()
-                .gap_2()
-                .mt_1()
+                .gap(space::S)
+                .mt(space::S)
                 .child(
-                    button("key-yes", action)
+                    button(kind, "key-yes")
+                        .child(action)
                         .on_click(cx.listener(|this, _, _, cx| this.resolve_host_key(true, cx))),
                 )
                 .child(
-                    button("key-no", "Cancel")
+                    button(Button::Secondary, "key-no")
+                        .child("Cancel")
                         .on_click(cx.listener(|this, _, _, cx| this.resolve_host_key(false, cx))),
                 ),
         )
-}
-
-pub(crate) fn label(text: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .text_color(rgb(color::DIM))
-        .text_xs()
-        .child(text.into())
-}
-
-pub(crate) fn button(id: &'static str, text: &'static str) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .debug_selector(|| id.to_owned())
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(color::BORDER))
-        .bg(rgb(color::PANEL))
-        .hover(|s| s.bg(rgb(color::ROW_HOVER)))
-        .cursor_pointer()
-        .text_sm()
-        .child(text)
-}
-
-fn section(title: &str, count: usize) -> gpui::Div {
-    div()
-        .mt_4()
-        .mb_1()
-        .flex()
-        .gap_2()
-        .items_baseline()
-        .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title.to_owned()),
-        )
-        .child(label(count.to_string()))
-}
-
-/// A row of fixed-width monospace cells; the last cell takes the rest.
-fn row(cells: Vec<(f32, String)>, dim: bool) -> gpui::Div {
-    let n = cells.len();
-    div()
-        .flex()
-        .gap_3()
-        .py(px(2.))
-        .font_family(MONO)
-        .text_xs()
-        .when(dim, |d| d.text_color(rgb(color::DIM)))
-        .children(cells.into_iter().enumerate().map(|(i, (w, text))| {
-            let cell = div()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(text);
-            if i + 1 == n {
-                cell.flex_1()
-            } else {
-                cell.w(px(w)).flex_shrink_0()
-            }
-        }))
-}
-
-fn table(headers: &[(f32, &str)], rows: Vec<Vec<String>>) -> gpui::Div {
-    let head = row(
-        headers.iter().map(|(w, h)| (*w, (*h).to_owned())).collect(),
-        true,
-    );
-    div().child(head).children(
-        rows.into_iter()
-            .map(|r| row(headers.iter().map(|(w, _)| *w).zip(r).collect(), false)),
-    )
-}
-
-fn state_text(vm: &Vm, status: Option<&VmStatus>) -> String {
-    match status {
-        Some(s) => format!(
-            "{} · ssh {} · route {} · checked {} ago",
-            s.label(vm.lifecycle),
-            s.ssh,
-            s.route.as_deref().unwrap_or("none"),
-            human_duration((Utc::now() - s.checked_at).num_seconds())
-        ),
-        None => "never checked".to_owned(),
-    }
-}
-
-fn ago(unix: i64) -> String {
-    human_duration(Utc::now().timestamp() - unix)
-}
-
-fn gb(kb: u64) -> String {
-    const GIB: u64 = 1_048_576;
-    format!("{}.{}G", kb / GIB, kb % GIB * 10 / GIB)
 }
 
 impl AppView {
@@ -768,21 +707,24 @@ impl AppView {
             .iter()
             .filter(|v| self.headline(v) == Some(Headline::Online))
             .count();
+        let none_match = vms.is_empty() && !self.vms.is_empty();
         div()
-            .w(px(300.))
+            .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(color::PANEL))
+            .bg(rgb(color::SURFACE))
             .border_r_1()
             .border_color(rgb(color::BORDER))
             .child(
                 div()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(color::BORDER))
+                    .px(space::L)
+                    .pt(space::L)
+                    .pb(space::M)
+                    .flex()
+                    .flex_col()
+                    .gap(space::M)
                     .child(
                         div()
                             .flex()
@@ -790,76 +732,171 @@ impl AppView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("Machines"),
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(text::SECTION)
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Machines"),
+                                    )
+                                    .child(label(format!(
+                                        "{online} online · {} VMs",
+                                        self.vms.len()
+                                    ))),
                             )
-                            .child(button("add-vm", "+ Add VM").on_click(
-                                cx.listener(|this, _, window, cx| this.open_add_form(window, cx)),
-                            )),
+                            .child(
+                                button(Button::Secondary, "add-vm")
+                                    .px(space::S)
+                                    .child(icon(Icon::Plus, px(14.), color::TEXT))
+                                    .child("Add VM")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_add_form(window, cx);
+                                    })),
+                            ),
                     )
-                    .child(label(format!("{online} online · {} VMs", self.vms.len())))
-                    .child(
-                        div()
-                            .mt_1()
-                            .text_sm()
-                            .text_color(rgb(if self.filter.is_empty() {
-                                color::DIM
-                            } else {
-                                color::TEXT
-                            }))
-                            .child(if self.filter.is_empty() {
-                                "type to filter".to_owned()
-                            } else {
-                                format!("filter: {}▏", self.filter)
-                            }),
-                    ),
+                    .child(self.filter_input(cx)),
             )
             .child(
                 div()
                     .id("vm-list")
                     .flex_1()
                     .overflow_y_scroll()
-                    .children(vms.into_iter().map(|vm| {
-                        let id = vm.id;
-                        let h = self.headline(vm);
-                        let sub = match self.status.get(&vm.id) {
-                            Some(s) => match &s.route {
-                                Some(r) => format!("{} · {r}", s.label(vm.lifecycle)),
-                                None => s.label(vm.lifecycle),
-                            },
-                            None => "never checked".to_owned(),
-                        };
+                    .px(space::S)
+                    .pb(space::S)
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .when(none_match, |d| {
+                        d.child(
+                            div()
+                                .pt(space::L)
+                                .flex()
+                                .justify_center()
+                                .child(label(format!("No machines match “{}”", self.filter))),
+                        )
+                    })
+                    .children(vms.into_iter().map(|vm| self.list_row(vm, cx))),
+            )
+    }
+
+    /// The filter as an input. Typing anywhere in the window edits it.
+    fn filter_input(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let active = !self.filter.is_empty();
+        div()
+            .id("filter")
+            .debug_selector(|| "filter".to_owned())
+            .h(CONTROL_HEIGHT)
+            .px(space::S)
+            .flex()
+            .items_center()
+            .gap(space::S)
+            .rounded(radius::M)
+            .border_1()
+            .border_color(rgb(if active {
+                color::ACCENT
+            } else {
+                color::BORDER_STRONG
+            }))
+            .when(active, |d| d.shadow(focus_ring()))
+            .bg(rgb(color::BG))
+            .cursor_text()
+            .on_click(cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
+            .child(icon(Icon::Search, px(14.), color::TEXT_MUTED))
+            .child(if active {
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .text_size(text::BODY)
+                    .child(self.filter.clone())
+                    .child(
                         div()
-                            .id(SharedString::from(vm.id.to_string()))
-                            .px_3()
-                            .py_1()
-                            .flex()
-                            .gap_2()
-                            .items_center()
-                            .cursor_pointer()
-                            .when(self.selected == Some(id), |d| d.bg(rgb(color::SELECTED)))
-                            .when(self.selected != Some(id), |d| {
-                                d.hover(|s| s.bg(rgb(color::ROW_HOVER)))
+                            .ml(px(1.))
+                            .w(px(1.5))
+                            .h(px(15.))
+                            .bg(rgb(color::ACCENT)),
+                    )
+            } else {
+                div()
+                    .flex_1()
+                    .text_size(text::BODY)
+                    .text_color(rgb(color::TEXT_MUTED))
+                    .child("Filter machines")
+            })
+            .when(active, |d| {
+                d.child(
+                    div()
+                        .id("filter-clear")
+                        .debug_selector(|| "filter-clear".to_owned())
+                        .size(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(color::HOVER)))
+                        .child(icon(Icon::Close, px(12.), color::TEXT_SECONDARY))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.filter.clear();
+                            cx.notify();
+                        })),
+                )
+            })
+    }
+
+    fn list_row(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let id = vm.id;
+        let selected = self.selected == Some(id);
+        let sub = match self.status.get(&vm.id) {
+            Some(s) => match &s.route {
+                Some(r) => format!("{} · {r}", s.label(vm.lifecycle)),
+                None => s.label(vm.lifecycle),
+            },
+            None => "never checked".to_owned(),
+        };
+        div()
+            .id(SharedString::from(vm.id.to_string()))
+            .px(space::S)
+            .py(px(7.))
+            .flex()
+            .gap(px(10.))
+            .items_start()
+            .rounded(radius::M)
+            .cursor_pointer()
+            .when(selected, |d| d.bg(tint(color::ACCENT)))
+            .when(!selected, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+            .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
+            .child(dot(headline_tone(self.headline(vm)).color(), 8.).mt(px(6.)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(
+                        div()
+                            .text_size(text::BODY)
+                            .font_weight(if selected {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::MEDIUM
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
-                            .child(div().size(px(8.)).rounded_full().bg(rgb(headline_color(h))))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .child(vm.name.clone()),
-                                    )
-                                    .child(
-                                        label(sub.clone())
-                                            .debug_selector(|| format!("{}: {sub}", vm.name)),
-                                    ),
-                            )
-                    })),
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(vm.name.clone()),
+                    )
+                    .child(
+                        label(sub.clone())
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .when(selected, |d| d.text_color(rgb(color::TEXT_SECONDARY)))
+                            .debug_selector(|| format!("{}: {sub}", vm.name)),
+                    ),
             )
     }
 
@@ -880,29 +917,43 @@ impl AppView {
             return div()
                 .flex_1()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(color::DIM))
-                .child("Select a VM")
+                .gap(space::XS)
+                .child(
+                    div()
+                        .text_size(text::SECTION)
+                        .text_color(rgb(color::TEXT_SECONDARY))
+                        .child("Select a machine"),
+                )
+                .child(label("or add one with Add VM"))
                 .into_any_element();
         };
         let header = self.render_header(vm, cx);
 
         let body = match (&self.detail, self.tab) {
-            (None, _) => div().child(label("loading…")).into_any_element(),
+            (None, _) => div().child(label("Loading…")).into_any_element(),
             (Some(d), Tab::Overview) => match &d.snapshot {
-                Some(s) => overview(s).into_any_element(),
+                Some(s) => crate::overview::render(s).into_any_element(),
                 None => div()
+                    .pt(space::XL)
+                    .flex()
+                    .justify_center()
                     .child(label(
                         "No snapshot yet. Refresh collects one once the VM is reachable.",
                     ))
                     .into_any_element(),
             },
-            (Some(d), Tab::Timeline) => timeline(&d.timeline).into_any_element(),
+            (Some(d), Tab::Timeline) => crate::timeline_view::render(
+                &crate::timeline_view::present(&d.timeline, chrono::Local::now()),
+            )
+            .into_any_element(),
         };
 
         div()
             .flex_1()
+            .min_w_0()
             .h_full()
             .flex()
             .flex_col()
@@ -913,8 +964,9 @@ impl AppView {
                     .id("detail-body")
                     .flex_1()
                     .overflow_y_scroll()
-                    .px_4()
-                    .pb_4()
+                    .px(space::XL)
+                    .pt(space::L)
+                    .pb(space::XL)
                     .child(body),
             )
             .into_any_element()
@@ -946,141 +998,254 @@ impl AppView {
         }
     }
 
-    /// The status dot and line, then `· agent ok · 0.1.0 · synced 2m ago [Remove agent]`
-    /// once the detail (with the agent record) has loaded. The agent's button is hidden
-    /// while an action runs or its removal waits for confirmation.
-    fn status_line(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
-        let id = vm.id;
-        let status = self.status.get(&id);
-        let agent = self.detail.as_ref().map(|d| {
-            AgentView::new(
-                d.agent.as_ref(),
-                status.map_or(AgentState::Unknown, |s| s.agent),
-            )
+    /// The headline as a pill, then the SSH facts, then the agent.
+    fn status_strip(&self, vm: &Vm) -> gpui::Div {
+        let status = self.status.get(&vm.id);
+        let headline = status.map(|s| s.label(vm.lifecycle));
+        let facts = status.map(|s| {
+            let mut facts = vec![ssh_fact(s.ssh).to_owned()];
+            facts.extend(s.route.as_ref().map(|r| format!("via {r}")));
+            facts.push(format!(
+                "checked {} ago",
+                ago((Utc::now() - s.checked_at).num_seconds())
+            ));
+            facts.join(" · ")
         });
-        let idle = self.busy.is_none() && self.confirm_agent_remove != Some(id);
+        let agent = self.agent_view(vm.id);
         div()
             .flex()
-            .gap_2()
+            .flex_wrap()
             .items_center()
-            .child(div().size(px(8.)).rounded_full().bg(rgb(headline_color(
-                status.map(|s| s.headline(vm.lifecycle)),
-            ))))
-            .child(label(state_text(vm, status)).debug_selector(|| {
-                let headline = status.map(|s| s.label(vm.lifecycle));
-                format!("headline: {}", headline.unwrap_or_default())
-            }))
+            .gap(space::M)
+            .child(
+                pill(
+                    headline_tone(status.map(|s| s.headline(vm.lifecycle))),
+                    headline
+                        .as_deref()
+                        .map_or_else(|| "Never checked".to_owned(), sentence_case),
+                )
+                .debug_selector(|| format!("headline: {}", headline.clone().unwrap_or_default())),
+            )
+            .when_some(facts, |d, f| {
+                d.child(
+                    div()
+                        .text_size(text::META)
+                        .text_color(rgb(color::TEXT_SECONDARY))
+                        .child(f),
+                )
+            })
             .when_some(agent, |d, agent| {
-                let action = agent.action();
                 let text = agent.text(Utc::now());
-                d.child(label("·"))
-                    .child(label(text.clone()).debug_selector(|| format!("agent: {text}")))
-                    .when(idle, |d| {
-                        d.child(button(action.id(), action.label()).on_click(cx.listener(
-                            move |this, _, _, cx| {
+                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(color::BORDER_STRONG)))
+                    .child(
+                        div()
+                            .debug_selector(|| format!("agent: {text}"))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(text::META)
+                            .text_color(rgb(color::TEXT_SECONDARY))
+                            .child(dot(agent.tone().color(), 6.))
+                            .child(text.clone()),
+                    )
+            })
+    }
+
+    /// The "More" button and, while open, its menu: edit, remove, and the agent action.
+    fn more_menu(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
+        let id = vm.id;
+        let agent_action = self.agent_view(id).map(|a| a.action());
+        let idle = self.busy.is_none() && self.confirm != Some(Confirm::RemoveAgent(id));
+        div()
+            .relative()
+            .child(
+                icon_button("more", Icon::More, self.menu_open).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.menu_open = !this.menu_open;
+                        cx.notify();
+                    },
+                )),
+            )
+            .when(self.menu_open, |d| {
+                let agent_item = agent_action.map(|action| {
+                    let text = if action == AgentAction::Remove {
+                        "Remove agent…"
+                    } else {
+                        action.label()
+                    };
+                    let danger = action == AgentAction::Remove;
+                    if idle {
+                        menu_action(action.id(), text, danger)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.menu_open = false;
                                 if action == AgentAction::Remove {
-                                    this.confirm_agent_remove = Some(id);
+                                    this.confirm = Some(Confirm::RemoveAgent(id));
                                     cx.notify();
                                 } else {
                                     this.run_agent_action(id, action, cx);
                                 }
-                            },
-                        )))
-                    })
+                            }))
+                            .into_any_element()
+                    } else {
+                        menu_item(action.id(), text, danger, false).into_any_element()
+                    }
+                });
+                d.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(CONTROL_HEIGHT + px(6.))
+                            .right_0()
+                            .child(
+                                menu()
+                                    .debug_selector(|| "menu".to_owned())
+                                    .occlude()
+                                    .child(menu_action("edit", "Edit VM…", false).on_click(
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.menu_open = false;
+                                            this.open_edit_form(id, window, cx);
+                                        }),
+                                    ))
+                                    .child(menu_action("remove", "Remove VM…", true).on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.menu_open = false;
+                                            this.confirm = Some(Confirm::RemoveVm(id));
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .when_some(agent_item, |m, item| {
+                                        m.child(menu_separator()).child(item)
+                                    }),
+                            ),
+                    )
+                    .with_priority(1),
+                )
             })
+    }
+
+    /// The VM's name and address, and its actions.
+    fn title_row(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
+        let id = vm.id;
+        let ep = vm
+            .endpoints
+            .first()
+            .map(|e| format!("{}@{}:{}", vm.username, e.address, e.port))
+            .unwrap_or_default();
+        let busy = self.busy.map(|b| format!("{}…", sentence_case(b)));
+        div()
+            .flex()
+            .items_center()
+            .gap(space::M)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(text::TITLE)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(vm.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(text::META)
+                            .text_color(rgb(color::TEXT_MUTED))
+                            .child(div().font_family(MONO).child(ep))
+                            .child("·")
+                            .child(self.path_text(vm)),
+                    ),
+            )
+            .when_some(busy, |d, b| d.child(label(b)))
+            .child(
+                button(Button::Secondary, "check")
+                    .child("Check")
+                    .on_click(cx.listener(move |this, _, _, cx| this.check(id, cx))),
+            )
+            .child(
+                button(Button::Secondary, "collect")
+                    .child("Refresh")
+                    .on_click(cx.listener(move |this, _, _, cx| this.collect(id, cx))),
+            )
+            .child(
+                button(Button::Primary, "terminal")
+                    .child(icon(Icon::Terminal, px(14.), color::ON_ACCENT))
+                    .child("Open terminal")
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_terminal(id, cx))),
+            )
+            .child(self.more_menu(vm, cx))
     }
 
     fn render_header(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
         let id = vm.id;
         let status = self.status.get(&id);
-        let ep = vm
-            .endpoints
-            .first()
-            .map(|e| format!("{}:{}", e.address, e.port))
-            .unwrap_or_default();
-        let path = self.path_text(vm);
-
         div()
-            .px_4()
-            .py_3()
+            .px(space::XL)
+            .pt(space::L)
             .border_b_1()
             .border_color(rgb(color::BORDER))
             .flex()
             .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::BOLD)
-                            .child(vm.name.clone()),
-                    )
-                    .child(label(format!("{}@{ep} · {path}", vm.username)))
-                    .child(div().flex_1())
-                    .when_some(self.busy, |d, b| d.child(label(format!("{b}…"))))
-                    .child(
-                        button("check", "Check")
-                            .on_click(cx.listener(move |this, _, _, cx| this.check(id, cx))),
-                    )
-                    .child(
-                        button("collect", "Refresh")
-                            .on_click(cx.listener(move |this, _, _, cx| this.collect(id, cx))),
-                    )
-                    .child(
-                        button("terminal", "Open terminal").on_click(
-                            cx.listener(move |this, _, _, cx| this.open_terminal(id, cx)),
-                        ),
-                    )
-                    .child(button("edit", "Edit").on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.open_edit_form(id, window, cx);
-                        },
-                    )))
-                    .child(button("remove", "Remove").on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.confirm_remove = Some(id);
-                            cx.notify();
-                        },
-                    ))),
-            )
-            .when(self.confirm_remove == Some(id), |d| {
+            .gap(space::M)
+            .child(self.title_row(vm, cx))
+            .child(self.status_strip(vm))
+            .when_some(status.and_then(|s| s.detail.clone()), |d, detail| {
+                d.child(
+                    div()
+                        .text_size(text::META)
+                        .text_color(rgb(color::AMBER))
+                        .child(detail),
+                )
+            })
+            .when_some(self.message.clone(), |d, (m, err)| {
+                d.child(
+                    div()
+                        .text_size(text::META)
+                        .text_color(rgb(if err {
+                            color::RED
+                        } else {
+                            color::TEXT_SECONDARY
+                        }))
+                        .child(m),
+                )
+            })
+            .when(self.confirm == Some(Confirm::RemoveVm(id)), |d| {
                 d.child(remove_panel(vm, cx))
             })
-            .child(self.status_line(vm, cx))
-            .when(self.confirm_agent_remove == Some(id), |d| {
+            .when(self.confirm == Some(Confirm::RemoveAgent(id)), |d| {
                 d.child(agent_remove_panel(vm, cx))
             })
             .when(
                 status.is_some_and(|s| s.ssh == SshState::HostKey) && self.key_prompt.is_none(),
                 |d| {
-                    d.child(div().flex().child(
-                        button("review-key", "Review host key…").on_click(
-                            cx.listener(move |this, _, _, cx| this.review_host_key(id, cx)),
-                        ),
-                    ))
+                    d.child(
+                        callout(Tone::Warn)
+                            .child(div().flex_1().min_w_0().child(
+                                "The VM's host key needs your decision before VMDesk connects.",
+                            ))
+                            .child(
+                                button(Button::Secondary, "review-key")
+                                    .child("Review host key…")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.review_host_key(id, cx);
+                                    })),
+                            ),
+                    )
                 },
             )
             .when_some(self.key_prompt.clone(), |d, p| d.child(key_panel(&p, cx)))
-            .when_some(status.and_then(|s| s.detail.clone()), |d, detail| {
-                d.child(div().text_xs().text_color(rgb(color::AMBER)).child(detail))
-            })
-            .when_some(self.message.clone(), |d, (m, err)| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(if err { color::RED } else { color::ACCENT }))
-                        .child(m),
-                )
-            })
             .child(
                 div()
-                    .mt_2()
                     .flex()
-                    .gap_4()
+                    .gap(space::XL)
                     .child(self.tab_button("tab-overview", "Overview", Tab::Overview, cx))
                     .child(self.tab_button("tab-timeline", "Timeline", Tab::Timeline, cx)),
             )
@@ -1089,215 +1254,38 @@ impl AppView {
     fn tab_button(
         &self,
         id: &'static str,
-        text: &'static str,
+        content: &'static str,
         tab: Tab,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.tab == tab;
         div()
             .id(id)
-            .pb_1()
+            .debug_selector(|| id.to_owned())
+            .h(px(36.))
+            .flex()
+            .items_center()
+            .border_b_2()
+            .border_color(if active {
+                rgb(color::ACCENT).into()
+            } else {
+                transparent_black()
+            })
             .cursor_pointer()
-            .text_sm()
-            .when(active, |d| d.border_b_2().border_color(rgb(color::ACCENT)))
-            .when(!active, |d| d.text_color(rgb(color::DIM)))
+            .text_size(text::BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(rgb(if active {
+                color::TEXT
+            } else {
+                color::TEXT_SECONDARY
+            }))
+            .hover(|s| s.text_color(rgb(color::TEXT)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.tab = tab;
                 cx.notify();
             }))
-            .child(text)
+            .child(content)
     }
-}
-
-fn overview(s: &Snapshot) -> gpui::Div {
-    let sys = &s.system;
-    let taken = s
-        .taken_at
-        .map(|t| {
-            format!(
-                "snapshot {} ago",
-                human_duration((Utc::now() - t).num_seconds())
-            )
-        })
-        .unwrap_or_default();
-    let disks: Vec<String> = sys
-        .disks
-        .iter()
-        .map(|d| format!("{} {}/{}", d.mount, gb(d.used_kb), gb(d.total_kb)))
-        .collect();
-
-    div()
-        .pt_3()
-        .child(label(format!(
-            "{} · {} · kernel {} · {taken}",
-            sys.hostname, sys.os, sys.kernel
-        )))
-        .child(label(format!(
-            "up {} · load {:.2} {:.2} {:.2} on {} cpus · mem {} / {} · disks {}",
-            human_duration(i64::try_from(sys.uptime_secs).unwrap_or(0)),
-            sys.load[0],
-            sys.load[1],
-            sys.load[2],
-            sys.cpus,
-            gb(sys.mem_used_kb),
-            gb(sys.mem_total_kb),
-            disks.join(", ")
-        )))
-        .child(tmux_section(s))
-        .child(containers_section(s))
-        .child(ports_section(s))
-        .child(repos_section(s))
-        .child(processes_section(s))
-        .when(!s.unavailable.is_empty(), |d| {
-            d.child(div().mt_4().child(label(format!(
-                "not collected: {}",
-                s.unavailable.join("; ")
-            ))))
-        })
-}
-
-fn tmux_section(s: &Snapshot) -> gpui::Div {
-    div().child(section("tmux", s.tmux.len())).child(table(
-        &[
-            (160., "SESSION"),
-            (80., "STATE"),
-            (90., "CREATED"),
-            (0., "ACTIVE PANE"),
-        ],
-        s.tmux
-            .iter()
-            .map(|t| {
-                vec![
-                    t.name.clone(),
-                    if t.attached { "attached" } else { "detached" }.to_owned(),
-                    format!("{} ago", ago(t.created)),
-                    format!(
-                        "{} {}",
-                        t.pane_command.as_deref().unwrap_or(""),
-                        t.pane_cwd.as_deref().unwrap_or("")
-                    ),
-                ]
-            })
-            .collect(),
-    ))
-}
-
-fn containers_section(s: &Snapshot) -> gpui::Div {
-    div()
-        .child(section("containers", s.containers.len()))
-        .child(table(
-            &[
-                (200., "NAME"),
-                (220., "IMAGE"),
-                (170., "STATUS"),
-                (0., "COMPOSE"),
-            ],
-            s.containers
-                .iter()
-                .map(|c| {
-                    vec![
-                        c.name.clone(),
-                        c.image.clone(),
-                        c.status.clone(),
-                        c.compose_project.clone().unwrap_or_default(),
-                    ]
-                })
-                .collect(),
-        ))
-}
-
-fn ports_section(s: &Snapshot) -> gpui::Div {
-    div()
-        .child(section("listening ports", s.listeners.len()))
-        .child(table(
-            &[(200., "ADDRESS"), (80., "PID"), (0., "PROCESS")],
-            s.listeners
-                .iter()
-                .map(|l| {
-                    vec![
-                        format!("{}:{}", l.addr, l.port),
-                        l.pid.map(|p| p.to_string()).unwrap_or_default(),
-                        l.process.clone().unwrap_or_default(),
-                    ]
-                })
-                .collect(),
-        ))
-}
-
-fn repos_section(s: &Snapshot) -> gpui::Div {
-    div().child(section("repos", s.repos.len())).child(table(
-        &[
-            (260., "PATH"),
-            (200., "BRANCH"),
-            (100., "CHANGES"),
-            (0., "LAST COMMIT"),
-        ],
-        s.repos
-            .iter()
-            .map(|r| {
-                vec![
-                    r.path.clone(),
-                    match (r.ahead, r.behind) {
-                        (Some(a), Some(b)) if a + b > 0 => {
-                            format!("{} +{a} -{b}", r.branch.as_deref().unwrap_or("(detached)"))
-                        }
-                        _ => r.branch.clone().unwrap_or_else(|| "(detached)".into()),
-                    },
-                    if r.dirty == 0 {
-                        "clean".into()
-                    } else {
-                        format!("{} modified", r.dirty)
-                    },
-                    r.last_commit
-                        .as_ref()
-                        .map(|c| format!("{} ago: {}", ago(c.time), c.subject))
-                        .unwrap_or_default(),
-                ]
-            })
-            .collect(),
-    ))
-}
-
-fn processes_section(s: &Snapshot) -> gpui::Div {
-    let mut procs: Vec<_> = s.processes.iter().collect();
-    procs.sort_by_key(|p| std::cmp::Reverse(p.started_at));
-    div().child(section("processes", procs.len())).child(table(
-        &[
-            (70., "PID"),
-            (80., "RUNNING"),
-            (200., "CWD"),
-            (0., "COMMAND"),
-        ],
-        procs
-            .iter()
-            .map(|p| {
-                vec![
-                    p.pid.to_string(),
-                    ago(p.started_at),
-                    p.cwd.clone().unwrap_or_default(),
-                    p.cmdline.clone(),
-                ]
-            })
-            .collect(),
-    ))
-}
-
-fn timeline(entries: &[TimelineEntry]) -> gpui::Div {
-    if entries.is_empty() {
-        return div()
-            .pt_3()
-            .child(label("No events yet. They appear as snapshots change."));
-    }
-    div().pt_3().children(entries.iter().map(|e| {
-        let local =
-            e.ts.with_timezone(&chrono::Local)
-                .format("%m-%d %H:%M")
-                .to_string();
-        row(
-            vec![(90., local), (150., e.kind.clone()), (0., e.summary())],
-            false,
-        )
-    }))
 }
 
 impl Render for AppView {
@@ -1312,11 +1300,14 @@ impl Render for AppView {
         let body = div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(rgb(color::BG))
             .text_color(rgb(color::TEXT))
+            .font_family(SANS)
+            .text_size(text::BODY)
             .children(crate::chrome::title_bar(window, title))
             .child(
                 div()
@@ -1325,7 +1316,26 @@ impl Render for AppView {
                     .flex()
                     .child(self.render_list(cx))
                     .child(self.render_detail(cx)),
-            );
+            )
+            .when(self.menu_open, |d| {
+                // Below the menu, above everything else: a click outside closes it.
+                d.child(deferred(
+                    div()
+                        .id("menu-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.menu_open = false;
+                                cx.notify();
+                            }),
+                        ),
+                ))
+            });
         crate::chrome::frame(window, body.into_any_element())
     }
 }

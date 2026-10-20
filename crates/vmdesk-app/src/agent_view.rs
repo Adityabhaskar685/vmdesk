@@ -1,8 +1,11 @@
 //! What the VM header says about the VM's agent, and the one action it offers there.
 
 use chrono::{DateTime, Utc};
-use vmdesk_core::{AgentState, human_duration};
+use vmdesk_core::AgentState;
 use vmdesk_db::AgentRecord;
+
+use crate::human::ago;
+use crate::theme::Tone;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentAction {
@@ -85,32 +88,35 @@ impl AgentView {
 
     pub fn text(&self, now: DateTime<Utc>) -> String {
         let synced = |at: &Option<DateTime<Utc>>| match at {
-            Some(t) => format!("synced {} ago", human_duration((now - *t).num_seconds())),
+            Some(t) => format!("synced {} ago", ago((now - *t).num_seconds())),
             None => "never synced".to_owned(),
         };
         match self {
-            Self::None => "no agent".to_owned(),
-            Self::Missing => "agent missing from the VM (collecting over SSH)".to_owned(),
+            Self::None => "No agent".to_owned(),
+            Self::Missing => "Agent missing from the VM · collecting over SSH".to_owned(),
             Self::Ok {
                 version,
                 synced: at,
-            } => format!("agent ok · {version} · {}", synced(at)),
+            } => format!("Agent {version} · recording · {}", synced(at)),
             Self::Outdated {
                 version,
                 synced: at,
-            } => {
-                format!("agent outdated {version} · {}", synced(at))
-            }
-            Self::NotRunning => "agent not running (the next poll starts it)".to_owned(),
-            Self::Error => {
-                "agent error: it did not answer properly (collecting over SSH)".to_owned()
-            }
+            } => format!("Agent {version} · outdated · {}", synced(at)),
+            Self::NotRunning => "Agent not running · the next poll starts it".to_owned(),
+            Self::Error => "Agent not answering properly · collecting over SSH".to_owned(),
             Self::Unchecked {
                 version,
                 synced: at,
-            } => {
-                format!("agent {version} · not checked yet · {}", synced(at))
-            }
+            } => format!("Agent {version} · not checked yet · {}", synced(at)),
+        }
+    }
+
+    pub fn tone(&self) -> Tone {
+        match self {
+            Self::Ok { .. } => Tone::Good,
+            Self::Missing | Self::Outdated { .. } | Self::NotRunning => Tone::Warn,
+            Self::Error => Tone::Bad,
+            Self::None | Self::Unchecked { .. } => Tone::Neutral,
         }
     }
 
@@ -146,42 +152,42 @@ mod tests {
             last_contact_at: Some(now - Duration::seconds(130)),
         };
         let cases = [
-            (None, AgentState::Unknown, "no agent", AgentAction::Install),
-            (None, AgentState::Absent, "no agent", AgentAction::Install),
+            (None, AgentState::Unknown, "No agent", AgentAction::Install),
+            (None, AgentState::Absent, "No agent", AgentAction::Install),
             (
                 Some(&record),
                 AgentState::Absent,
-                "agent missing from the VM (collecting over SSH)",
+                "Agent missing from the VM · collecting over SSH",
                 AgentAction::Install,
             ),
             (
                 Some(&record),
                 AgentState::Ok,
-                "agent ok · 0.1.0 · synced 2m ago",
+                "Agent 0.1.0 · recording · synced 2m ago",
                 AgentAction::Remove,
             ),
             (
                 Some(&record),
                 AgentState::Outdated,
-                "agent outdated 0.1.0 · synced 2m ago",
+                "Agent 0.1.0 · outdated · synced 2m ago",
                 AgentAction::Upgrade,
             ),
             (
                 Some(&record),
                 AgentState::NotRunning,
-                "agent not running (the next poll starts it)",
+                "Agent not running · the next poll starts it",
                 AgentAction::Remove,
             ),
             (
                 Some(&record),
                 AgentState::Error,
-                "agent error: it did not answer properly (collecting over SSH)",
+                "Agent not answering properly · collecting over SSH",
                 AgentAction::Remove,
             ),
             (
                 Some(&record),
                 AgentState::Unknown,
-                "agent 0.1.0 · not checked yet · synced 2m ago",
+                "Agent 0.1.0 · not checked yet · synced 2m ago",
                 AgentAction::Remove,
             ),
         ];

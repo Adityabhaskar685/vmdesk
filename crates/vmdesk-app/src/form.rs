@@ -1,11 +1,15 @@
 //! The "Add VM" form.
 
-use gpui::{App, AppContext, Context, Entity, FocusHandle, Window, div, prelude::*, px, rgb};
+use gpui::{
+    App, AppContext, Context, Entity, FocusHandle, FontWeight, Window, div, prelude::*, px, rgb,
+};
 use vmdesk_core::{CredentialRef, Hop, Vm, VmId};
 
 use crate::backend::{Auth, NewVmSpec};
 use crate::field::TextField;
-use crate::ui::{AppView, button, color, label};
+use crate::kit::{Button, button, callout, label};
+use crate::theme::{Tone, color, space, text, tint};
+use crate::ui::AppView;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AuthKind {
@@ -189,31 +193,90 @@ fn expand_home(path: &str) -> std::path::PathBuf {
     }
 }
 
-fn chip(id: impl Into<gpui::ElementId>, text: String, on: bool) -> gpui::Stateful<gpui::Div> {
+/// A rounded choice among several; `on` is the chosen one.
+fn chip(id: impl Into<gpui::ElementId>, content: String, on: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .px_2()
-        .py(px(3.))
-        .rounded_md()
+        .h(px(28.))
+        .px(space::M)
+        .flex()
+        .items_center()
+        .rounded_full()
         .border_1()
-        .text_xs()
+        .text_size(text::META)
+        .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
-        .border_color(rgb(if on { color::ACCENT } else { color::BORDER }))
-        .when(on, |d| d.bg(rgb(color::SELECTED)))
-        .hover(|s| s.bg(rgb(color::ROW_HOVER)))
-        .child(text)
+        .border_color(rgb(if on {
+            color::ACCENT
+        } else {
+            color::BORDER_STRONG
+        }))
+        .text_color(rgb(if on {
+            color::TEXT
+        } else {
+            color::TEXT_SECONDARY
+        }))
+        .when(on, |d| d.bg(tint(color::ACCENT)))
+        .when(!on, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+        .child(content)
+}
+
+fn caption(content: &str) -> gpui::Div {
+    div()
+        .text_size(text::META)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(color::TEXT_SECONDARY))
+        .child(content.to_owned())
 }
 
 fn labelled(name: &str, field: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap_1()
-        .child(label(name.to_owned()))
+        .gap(px(6.))
+        .child(caption(name))
         .child(field)
 }
 
 pub fn render(form: &AddForm, vms: &[Vm], cx: &mut Context<AppView>) -> gpui::Div {
+    let (title, intro) = match &form.editing {
+        Some(o) => (
+            format!("Edit {}", o.name),
+            "Only the connection details you change are saved.",
+        ),
+        None => (
+            "Add VM".to_owned(),
+            "How VMDesk reaches the machine over SSH. It is checked as soon as it is added.",
+        ),
+    };
+    div()
+        .px(space::XL)
+        .py(space::XL)
+        .flex()
+        .flex_col()
+        .gap(space::XL)
+        .max_w(px(640.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(space::XS)
+                .child(
+                    div()
+                        .text_size(text::TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(label(intro)),
+        )
+        .child(fields(form, vms, cx))
+        .when_some(form.error.clone(), |d, e| {
+            d.child(callout(Tone::Bad).child(e))
+        })
+        .child(actions(form, cx))
+}
+
+fn fields(form: &AddForm, vms: &[Vm], cx: &mut Context<AppView>) -> gpui::Div {
     let auth_chip = |kind: AuthKind, id: &'static str, text: &str, cx: &mut Context<AppView>| {
         chip(id, text.to_owned(), form.auth == kind).on_click(cx.listener(
             move |this, _, window, cx| {
@@ -234,49 +297,43 @@ pub fn render(form: &AddForm, vms: &[Vm], cx: &mut Context<AppView>) -> gpui::Di
         ))
     };
     div()
-        .p_4()
         .flex()
         .flex_col()
-        .gap_3()
-        .max_w(px(640.))
-        .child(div().text_lg().child(match &form.editing {
-            Some(o) => format!("Edit {}", o.name),
-            None => "Add VM".to_owned(),
-        }))
+        .gap(space::L)
         .child(
             div()
                 .flex()
-                .gap_3()
+                .gap(space::M)
                 .child(div().flex_1().child(labelled("Name", form.name.clone())))
                 .child(
                     div()
                         .flex_1()
                         .child(labelled("Address", form.address.clone())),
                 )
-                .child(div().w(px(80.)).child(labelled("Port", form.port.clone()))),
+                .child(div().w(px(88.)).child(labelled("Port", form.port.clone()))),
         )
         .child(labelled("User", form.user.clone()))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .child(label("Log in with"))
+                .gap(px(6.))
+                .child(caption("Log in with"))
                 .child(
                     div()
                         .flex()
-                        .gap_2()
+                        .gap(space::S)
                         .child(auth_chip(
                             AuthKind::Agent,
                             "auth-agent",
                             "ssh-agent / default keys",
                             cx,
                         ))
-                        .child(auth_chip(AuthKind::KeyFile, "auth-key", "key file", cx))
+                        .child(auth_chip(AuthKind::KeyFile, "auth-key", "Key file", cx))
                         .child(auth_chip(
                             AuthKind::Password,
                             "auth-password",
-                            "password",
+                            "Password",
                             cx,
                         )),
                 ),
@@ -288,10 +345,6 @@ pub fn render(form: &AddForm, vms: &[Vm], cx: &mut Context<AppView>) -> gpui::Di
             d.child(labelled("Password", form.password.clone()))
         })
         .child(via_section(form, vms, cx))
-        .when_some(form.error.clone(), |d, e| {
-            d.child(div().text_sm().text_color(rgb(color::RED)).child(e))
-        })
-        .child(actions(form, cx))
 }
 
 /// "direct" or one of the other VMs as the jump host.
@@ -302,18 +355,18 @@ fn via_section(form: &AddForm, vms: &[Vm], cx: &mut Context<AppView>) -> gpui::D
     div()
         .flex()
         .flex_col()
-        .gap_1()
-        .child(label("Reach it through (jump host)"))
+        .gap(px(6.))
+        .child(caption("Reach it through (jump host)"))
         .child(
             div()
                 .id("via-list")
-                .max_h(px(110.))
+                .max_h(px(120.))
                 .overflow_y_scroll()
                 .flex()
                 .flex_wrap()
-                .gap_1()
+                .gap(space::S)
                 .child(
-                    chip("via-none", "direct".into(), form.via.is_none()).on_click(cx.listener(
+                    chip("via-none", "Direct".into(), form.via.is_none()).on_click(cx.listener(
                         |this, _, _, cx| {
                             if let Some(f) = this.add.as_mut() {
                                 f.via = None;
@@ -342,25 +395,31 @@ fn via_section(form: &AddForm, vms: &[Vm], cx: &mut Context<AppView>) -> gpui::D
 /// Save / Cancel and the keyboard hint.
 fn actions(form: &AddForm, cx: &mut Context<AppView>) -> gpui::Div {
     div()
+        .pt(space::L)
+        .border_t_1()
+        .border_color(rgb(color::BORDER))
         .flex()
-        .gap_2()
+        .items_center()
+        .gap(space::S)
         .child(
-            button(
-                "add-save",
-                match (form.saving, form.editing.is_some()) {
+            button(Button::Primary, "add-save")
+                .min_w(px(72.))
+                .child(match (form.saving, form.editing.is_some()) {
                     (true, _) => "Saving…",
                     (false, true) => "Save",
-                    (false, false) => "Add",
-                },
-            )
-            .on_click(cx.listener(|this, _, _, cx| this.save_new_vm(cx))),
+                    (false, false) => "Add VM",
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.save_new_vm(cx))),
         )
         .child(
-            button("add-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| {
-                this.add = None;
-                cx.notify();
-            })),
+            button(Button::Secondary, "add-cancel")
+                .child("Cancel")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.add = None;
+                    cx.notify();
+                })),
         )
+        .child(div().flex_1())
         .child(label(
             "Tab moves between fields · Enter saves · Esc cancels",
         ))

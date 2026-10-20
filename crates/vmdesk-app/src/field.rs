@@ -6,7 +6,8 @@ use gpui::{
     Context, FocusHandle, KeyDownEvent, MouseButton, SharedString, Window, div, prelude::*, px, rgb,
 };
 
-use crate::ui::color;
+use crate::kit::focus_ring;
+use crate::theme::{color, radius, text};
 
 pub struct TextField {
     focus: FocusHandle,
@@ -72,6 +73,7 @@ impl Render for TextField {
         } else {
             Some(self.text.clone())
         };
+        let caret = || div().w(px(1.5)).h(px(15.)).bg(rgb(color::ACCENT));
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
@@ -83,29 +85,37 @@ impl Render for TextField {
                 }),
             )
             .w_full()
-            .h(px(30.))
-            .px_2()
+            .h(px(32.))
+            .px(px(10.))
             .flex()
             .items_center()
-            .rounded_md()
+            .rounded(radius::M)
             .border_1()
             .border_color(rgb(if focused {
                 color::ACCENT
             } else {
-                color::BORDER
+                color::BORDER_STRONG
             }))
-            .bg(rgb(color::BG))
-            .text_sm()
+            .when(focused, |d| d.shadow(focus_ring()))
+            .bg(rgb(color::SURFACE))
+            .text_size(text::BODY)
             .overflow_hidden()
             .whitespace_nowrap()
             .cursor_text()
             .child(match shown {
-                Some(t) => div().child(if focused { format!("{t}▏") } else { t }),
-                None => div().text_color(rgb(color::DIM)).child(if focused {
-                    format!("▏{}", self.placeholder)
-                } else {
-                    self.placeholder.to_string()
-                }),
+                Some(t) => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(1.))
+                    .child(t)
+                    .when(focused, |d| d.child(caret())),
+                None => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(1.))
+                    .text_color(rgb(color::TEXT_MUTED))
+                    .when(focused, |d| d.child(caret()))
+                    .child(self.placeholder.clone()),
             })
     }
 }
