@@ -73,7 +73,8 @@ too), and three tabs:
 - **Sessions** lists stretches of activity, newest first, with the repos and commands in each.
   Click a title to rename the session.
 - **Timeline** tells each event as a sentence under a day header, with its source (`agent`,
-  `ssh` or `laptop`).
+  `ssh` or `laptop`). The day of the events at the top stays pinned as you scroll. It holds
+  the newest 300 events; **Show older events** at its foot loads more.
 
 ![The Sessions tab: an ongoing titled session with its repos, commands and a note, and an older untitled session](docs/screenshots/sessions.png)
 
@@ -81,7 +82,9 @@ too), and three tabs:
 
 **Search events**, at the foot of the list or with Ctrl+K, searches the events of every VM. Each
 word must match the start of a word, so `upf` finds `pytest upf-tests/n4.py`. Click a result to
-open that VM's timeline.
+open that VM's Timeline at the event, however old: its row is tinted for a few seconds, **Show
+newer events** and **Show older events** load more around it, and **Back to latest** returns to
+the newest events.
 
 ![Search across VMs: three events matching "cargo", newest first, each with its VM](docs/screenshots/search.png)
 

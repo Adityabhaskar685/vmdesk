@@ -27,6 +27,35 @@ pub struct TimelineEntry {
     pub data: serde_json::Value,
 }
 
+/// Where an event sits in its VM's timeline, which runs in the order of these fields:
+/// time, then `seq`, then source. No two events of a VM share one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EventKey {
+    pub ts: DateTime<Utc>,
+    pub seq: i64,
+    pub source: String,
+}
+
+impl TimelineEntry {
+    #[must_use]
+    pub fn key(&self) -> EventKey {
+        EventKey {
+            ts: self.ts,
+            seq: self.seq,
+            source: self.source.clone(),
+        }
+    }
+}
+
+/// Which events of a VM a timeline query reads, from the newest down unless `After`.
+#[derive(Clone, Copy)]
+enum Range<'a> {
+    Newest,
+    Before(&'a EventKey),
+    AtOrBefore(&'a EventKey),
+    After(&'a EventKey),
+}
+
 /// The event's content for `data_json`; its kind goes in its own column.
 pub(crate) fn event_data(kind: &EventKind) -> Result<serde_json::Value> {
     // Serialized as `{"kind": .., "data": {..}}`.
@@ -126,19 +155,75 @@ impl Db {
         &self,
         vm: VmId,
         limit: u32,
-        before: Option<DateTime<Utc>>,
+        before: Option<&EventKey>,
     ) -> Result<Vec<TimelineEntry>> {
-        let rows = sqlx::query(
-            "SELECT source, seq, ts, kind, data_json FROM events \
-            WHERE vm_id = ?1 AND (?2 IS NULL OR ts < ?2) \
-            ORDER BY ts DESC, seq DESC LIMIT ?3",
-        )
-        .bind(vm.to_string())
-        .bind(before.map(|b| b.timestamp_millis()))
-        .bind(i64::from(limit))
-        .fetch_all(self.pool())
-        .await?;
-        rows.iter().map(entry_from_row).collect()
+        let range = before.map_or(Range::Newest, Range::Before);
+        self.events(vm, range, limit).await
+    }
+
+    /// Newest first: up to `newer` events after `at`, the event at `at`, and up to
+    /// `older` events before it.
+    pub async fn timeline_around(
+        &self,
+        vm: VmId,
+        at: &EventKey,
+        newer: u32,
+        older: u32,
+    ) -> Result<Vec<TimelineEntry>> {
+        let mut events = self.events(vm, Range::After(at), newer).await?;
+        let mut rest = self
+            .events(vm, Range::AtOrBefore(at), older.saturating_add(1))
+            .await?;
+        if rest.first().is_some_and(|e| e.key() != *at) {
+            rest.truncate(usize::try_from(older).unwrap_or(usize::MAX));
+        }
+        events.append(&mut rest);
+        Ok(events)
+    }
+
+    /// Up to `limit` events of `range`, newest first.
+    async fn events(&self, vm: VmId, range: Range<'_>, limit: u32) -> Result<Vec<TimelineEntry>> {
+        // The plain `ts` bound lets the (vm_id, ts) index start at the key.
+        let (bound, order, key) = match range {
+            Range::Newest => ("", "DESC", None),
+            Range::Before(k) => (
+                "AND ts <= ?3 AND (ts, seq, source) < (?3, ?4, ?5)",
+                "DESC",
+                Some(k),
+            ),
+            Range::AtOrBefore(k) => (
+                "AND ts <= ?3 AND (ts, seq, source) <= (?3, ?4, ?5)",
+                "DESC",
+                Some(k),
+            ),
+            Range::After(k) => (
+                "AND ts >= ?3 AND (ts, seq, source) > (?3, ?4, ?5)",
+                "ASC",
+                Some(k),
+            ),
+        };
+        let sql = format!(
+            "SELECT source, seq, ts, kind, data_json FROM events WHERE vm_id = ?1 {bound} \
+            ORDER BY ts {order}, seq {order}, source {order} LIMIT ?2"
+        );
+        let mut query = sqlx::query(&sql)
+            .bind(vm.to_string())
+            .bind(i64::from(limit));
+        if let Some(k) = key {
+            query = query
+                .bind(k.ts.timestamp_millis())
+                .bind(k.seq)
+                .bind(&k.source);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
+        let mut events = rows
+            .iter()
+            .map(entry_from_row)
+            .collect::<Result<Vec<_>>>()?;
+        if matches!(range, Range::After(_)) {
+            events.reverse();
+        }
+        Ok(events)
     }
 }
 
@@ -282,8 +367,87 @@ mod tests {
         assert_eq!((tl[0].kind.as_str(), tl[0].seq), ("tmux_attached", 2));
         assert_eq!(tl[0].data["name"], "b");
         assert_eq!(tl[1].kind, "tmux_closed");
-        let older = db.timeline(vm, 10, Some(tl[0].ts)).await.unwrap();
+        let older = db.timeline(vm, 10, Some(&tl[0].key())).await.unwrap();
         assert_eq!(older.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn around_an_event_reads_both_sides_in_timeline_order() {
+        use chrono::TimeZone;
+
+        let (db, vm) = db_with_vm().await;
+        let t0 = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let minute = |m: i64| t0 + Duration::minutes(m);
+        let mut conn = db.pool().acquire().await.unwrap();
+        let mut add = async |source: &str, ts, name: &str| {
+            let data = serde_json::json!({ "name": name });
+            insert_event(&mut conn, vm, source, ts, "tmux_attached", &data)
+                .await
+                .unwrap();
+        };
+        for m in 0..10 {
+            add("ssh", minute(m), &format!("s{m}")).await;
+        }
+        // Same time as s4, lower seq; same time and seq as s0, another source.
+        add("laptop", minute(4), "beside-s4").await;
+        add("agent:01a1", minute(0), "beside-s0").await;
+        drop(conn);
+
+        let names = |events: Vec<TimelineEntry>| -> Vec<String> {
+            events
+                .iter()
+                .map(|e| e.data["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let all = db.timeline(vm, 100, None).await.unwrap();
+        assert_eq!(
+            names(all.clone()),
+            [
+                "s9",
+                "s8",
+                "s7",
+                "s6",
+                "s5",
+                "s4",
+                "beside-s4",
+                "s3",
+                "s2",
+                "s1",
+                "s0",
+                "beside-s0"
+            ]
+        );
+        let key = |name: &str| all.iter().find(|e| e.data["name"] == name).unwrap().key();
+
+        let around = |at: EventKey, newer, older| {
+            let db = db.clone();
+            async move { names(db.timeline_around(vm, &at, newer, older).await.unwrap()) }
+        };
+        assert_eq!(
+            around(key("s4"), 2, 2).await,
+            ["s6", "s5", "s4", "beside-s4", "s3"]
+        );
+        assert_eq!(around(key("s9"), 3, 1).await, ["s9", "s8"], "nothing newer");
+        assert_eq!(
+            around(key("beside-s0"), 1, 5).await,
+            ["s0", "beside-s0"],
+            "nothing older"
+        );
+        let gone = EventKey {
+            ts: minute(4) + Duration::seconds(30),
+            seq: 99,
+            source: "ssh".into(),
+        };
+        assert_eq!(
+            around(gone, 1, 1).await,
+            ["s5", "s4"],
+            "a deleted event still has neighbours"
+        );
+        assert_eq!(
+            names(db.timeline(vm, 2, Some(&key("s4"))).await.unwrap()),
+            ["beside-s4", "s3"],
+            "older than an event includes one at the same time"
+        );
     }
 
     #[tokio::test]

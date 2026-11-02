@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use chrono::{Local, Utc};
 use gpui::{
-    AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString,
-    Window, div, prelude::*, px, rgb, transparent_black,
+    AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, ScrollHandle,
+    SharedString, Window, div, point, prelude::*, px, rgb, transparent_black,
 };
 use vmdesk_core::human::ago;
 use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus};
-use vmdesk_db::{NoteId, SessionId};
+use vmdesk_db::{EventKey, NoteId, SessionId};
 
 use crate::agent_view::{AgentAction, AgentView};
 use crate::backend::{Backend, Detail, Inventory, KeyProblem};
@@ -26,6 +26,7 @@ use crate::search_view::{DEBOUNCE, Search, SearchState};
 use crate::theme::{
     CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint, tone_color,
 };
+use crate::timeline_view::{HIGHLIGHT, TimelineWindow};
 use crate::work_view::{card_view, present_sessions, present_work, sessions_view, sidebar_line};
 
 /// How often the list re-reads the database (the monitor writes status there).
@@ -80,6 +81,12 @@ pub struct AppView {
     selected: Option<VmId>,
     detail: Option<Detail>,
     tab: Tab,
+    /// The stretch of events the Timeline tab asks for. A load for another is dropped.
+    pub(crate) timeline: TimelineWindow,
+    /// The detail body's scroll, which the Timeline moves to a search hit.
+    detail_scroll: ScrollHandle,
+    /// The window the detail body was last scrolled for; `None` after switching VM.
+    scrolled_for: Option<TimelineWindow>,
     inline: Option<Inline>,
     /// The event search, while it is open in place of the selected VM.
     search: Option<Search>,
@@ -110,6 +117,9 @@ impl AppView {
             selected: None,
             detail: None,
             tab: Tab::Overview,
+            timeline: TimelineWindow::LATEST,
+            detail_scroll: ScrollHandle::new(),
+            scrolled_for: None,
             inline: None,
             search: None,
             collected_at: None,
@@ -222,16 +232,19 @@ impl AppView {
         self.menu_open = false;
         self.collected_at = None;
         self.message = None;
+        self.timeline = TimelineWindow::LATEST;
+        self.scrolled_for = None;
         self.load_detail(id, cx);
         cx.notify();
     }
 
     fn load_detail(&mut self, id: VmId, cx: &mut Context<Self>) {
-        let load = self.backend.detail(id);
+        let window = self.timeline.clone();
+        let load = self.backend.detail(id, window.clone());
         cx.spawn(async move |this, cx| {
             let detail = load.await;
             this.update(cx, |v, cx| {
-                if v.selected != Some(id) {
+                if v.selected != Some(id) || v.timeline != window {
                     return; // the user moved on
                 }
                 match detail {
@@ -635,12 +648,67 @@ impl AppView {
         }));
     }
 
-    /// Shows a search hit: its VM, on the Timeline tab.
-    pub(crate) fn open_hit(&mut self, vm: VmId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Shows a search hit: its VM's Timeline, loaded around it and scrolled to it, with
+    /// its row tinted for [`HIGHLIGHT`].
+    pub(crate) fn open_hit(
+        &mut self,
+        vm: VmId,
+        hit: EventKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_search(window, cx);
         self.select(vm, cx);
         self.tab = Tab::Timeline;
+        let now = cx.background_executor().now();
+        self.show_timeline(TimelineWindow::around(hit, now), cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HIGHLIGHT).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// Loads `window` of the selected VM's events into the Timeline tab.
+    pub(crate) fn show_timeline(&mut self, window: TimelineWindow, cx: &mut Context<Self>) {
+        let Some(id) = self.selected else { return };
+        self.timeline = window;
+        self.load_detail(id, cx);
         cx.notify();
+    }
+
+    /// Once the detail shows a VM, or its Timeline another place, scrolls the body to the
+    /// search hit or to the top: in this frame, and again after it, because the body may
+    /// have moved in this frame (the Timeline's banner appears) and a scroll request
+    /// measures from where the body was in the last one.
+    fn scroll_if_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shown) = self.detail.as_ref().map(|d| &d.timeline.window) else {
+            return;
+        };
+        if self
+            .scrolled_for
+            .as_ref()
+            .is_some_and(|w| w.same_place(shown))
+        {
+            return;
+        }
+        self.scrolled_for = Some(shown.clone());
+        self.scroll_to_anchor();
+        cx.on_next_frame(window, |this, _, cx| {
+            this.scroll_to_anchor();
+            cx.notify();
+        });
+    }
+
+    /// Scrolls the detail body to the Timeline's search hit, or to the top without one.
+    fn scroll_to_anchor(&self) {
+        let anchor = self.detail.as_ref().and_then(|d| {
+            crate::timeline_view::anchor(&crate::timeline_view::items(&d.timeline, Local::now()))
+        });
+        match anchor {
+            Some(ix) => self.detail_scroll.scroll_to_top_of_item(ix),
+            None => self.detail_scroll.set_offset(point(px(0.), px(0.))),
+        }
     }
 
     pub(crate) fn save_new_vm(&mut self, cx: &mut Context<Self>) {
@@ -1252,8 +1320,11 @@ impl AppView {
                 .into_any_element();
         };
         let header = self.render_header(vm, cx);
-
-        let body = self.tab_body(cx);
+        let banner = match self.tab {
+            Tab::Timeline => crate::timeline_view::banner(&self.timeline, cx),
+            Tab::Overview | Tab::Sessions => None,
+        };
+        let (body, pinned_day) = self.tab_body(cx);
 
         div()
             .flex_1()
@@ -1263,22 +1334,36 @@ impl AppView {
             .flex_col()
             .overflow_hidden()
             .child(header)
+            .children(banner)
             .child(
                 div()
-                    .id("detail-body")
+                    .relative()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .px(space::XL)
-                    .pt(space::L)
-                    .pb(space::XL)
-                    .child(body),
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("detail-body")
+                            .debug_selector(|| "detail-body".to_owned())
+                            .track_scroll(&self.detail_scroll)
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px(space::XL)
+                            .pt(space::L)
+                            .pb(space::XL)
+                            .children(body),
+                    )
+                    .children(pinned_day.map(|d| crate::timeline_view::pinned(&d))),
             )
             .into_any_element()
     }
 
-    /// The selected VM's open tab.
-    fn tab_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        match (&self.detail, self.tab) {
+    /// The selected VM's open tab, as the detail body's children: one element, or for
+    /// the Timeline one per day header and row, so the body can scroll to a row. With
+    /// it, the day to pin over the top once its header has scrolled away.
+    fn tab_body(&self, cx: &mut Context<Self>) -> (Vec<AnyElement>, Option<String>) {
+        let one = match (&self.detail, self.tab) {
             (None, _) => div().child(label("Loading…")).into_any_element(),
             (Some(d), Tab::Overview) => {
                 let work = present_work(d.work.as_ref(), &d.sessions, &d.notes, Local::now());
@@ -1308,11 +1393,16 @@ impl AppView {
                 )
                 .into_any_element()
             }
-            (Some(d), Tab::Timeline) => crate::timeline_view::render(
-                &crate::timeline_view::present(&d.timeline, chrono::Local::now()),
-            )
-            .into_any_element(),
-        }
+            (Some(d), Tab::Timeline) => {
+                let items = crate::timeline_view::items(&d.timeline, Local::now());
+                let pinned =
+                    crate::timeline_view::pinned_day(&items, self.detail_scroll.top_item());
+                let now = cx.background_executor().now();
+                let rows = crate::timeline_view::render(items, &d.timeline.window, now, cx);
+                return (rows, pinned);
+            }
+        };
+        (vec![one], None)
     }
 
     /// `direct`, or `via bastion → inner` for the VM's preferred path.
@@ -1633,6 +1723,7 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.scroll_if_moved(window, cx);
         let title = match self
             .selected
             .and_then(|id| self.vms.iter().find(|v| v.id == id))

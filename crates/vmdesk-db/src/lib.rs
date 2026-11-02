@@ -24,7 +24,7 @@ pub use notes::{Note, NoteId};
 pub use search::SearchHit;
 pub use sessions::{CommandRuns, IDLE_GAP, RepoTouched, SessionId, SessionSummary, WorkSession};
 pub use sync::SyncReport;
-pub use timeline::TimelineEntry;
+pub use timeline::{EventKey, TimelineEntry};
 
 #[derive(Clone)]
 pub struct Db {

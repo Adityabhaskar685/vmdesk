@@ -11,7 +11,7 @@ use gpui::{
 };
 use vmdesk_core::VmId;
 use vmdesk_core::human::day;
-use vmdesk_db::{SearchHit, text_of};
+use vmdesk_db::{EventKey, SearchHit, text_of};
 
 use crate::backend::SEARCH_LIMIT;
 use crate::field::TextField;
@@ -74,6 +74,7 @@ pub struct HitDay {
 pub struct Hit {
     pub vm: VmId,
     pub vm_name: String,
+    pub key: EventKey,
     pub row: Row,
 }
 
@@ -86,6 +87,7 @@ pub fn present(hits: &[SearchHit], now: DateTime<Local>) -> Vec<HitDay> {
         let hit = Hit {
             vm: h.vm,
             vm_name: h.vm_name.clone(),
+            key: h.event.key(),
             row,
         };
         match days.last_mut() {
@@ -139,7 +141,7 @@ fn quiet(title: String, why: &'static str) -> Div {
 }
 
 fn hit_row(hit: &Hit, index: usize, cx: &mut Context<AppView>) -> impl IntoElement {
-    let vm = hit.vm;
+    let (vm, key) = (hit.vm, hit.key.clone());
     let selector = format!("hit: {} {}", hit.vm_name, text_of(&hit.row.title));
     div()
         .id(ElementId::NamedInteger("hit".into(), index as u64))
@@ -153,7 +155,9 @@ fn hit_row(hit: &Hit, index: usize, cx: &mut Context<AppView>) -> impl IntoEleme
         .rounded(radius::M)
         .cursor_pointer()
         .hover(|s| s.bg(rgb(color::HOVER)))
-        .on_click(cx.listener(move |this, _, window, cx| this.open_hit(vm, window, cx)))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_hit(vm, key.clone(), window, cx);
+        }))
         .child(time_cell(&hit.row))
         .child(
             div()
@@ -230,7 +234,7 @@ pub fn render(search: &Search, cx: &mut Context<AppView>) -> Div {
                                 .child("Search events"),
                         )
                         .child(label(
-                            "Every VM, newest first. Click an event to open its VM's timeline.",
+                            "Every VM, newest first. Click an event to see it in its VM's timeline.",
                         )),
                 )
                 .child(label("Esc closes")),

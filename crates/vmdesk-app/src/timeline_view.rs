@@ -1,13 +1,165 @@
-//! The timeline tab: each stored event in words ([`TimelineEntry::text`]) as a row,
-//! grouped under day headers, then how a row is drawn.
+//! The timeline tab: which stretch of the VM's events it holds, each event in words
+//! ([`TimelineEntry::text`]) as a row under its day, then how the tab is drawn.
+
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
-use gpui::{Div, FontWeight, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, Div, FontWeight, div, prelude::*, px, rgb};
 use vmdesk_core::human::day;
-use vmdesk_db::{Category, Line, Span, TimelineEntry, text_of};
+use vmdesk_db::{Category, EventKey, Line, Span, TimelineEntry, text_of};
 
-use crate::kit::label;
-use crate::theme::{MONO, color, space, text, tone_color};
+use crate::kit::{Button, button, label};
+use crate::theme::{MONO, color, radius, space, text, tint, tone_color};
+use crate::ui::AppView;
+
+/// Events the tab holds when it opens on the newest.
+const LATEST: u32 = 300;
+/// Events either side of a search hit when the tab opens on one.
+const AROUND: u32 = 100;
+/// Events that one Show older or Show newer adds.
+const PAGE: u32 = 200;
+/// How long a search hit's row stays tinted.
+pub const HIGHLIGHT: Duration = Duration::from_secs(4);
+/// Items kept above a search hit scrolled to the top; the first sits under the pinned day.
+const CONTEXT: usize = 4;
+
+/// Which stretch of the selected VM's events the tab holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimelineWindow {
+    /// The newest `count` events.
+    Latest { count: u32 },
+    /// A search hit, up to `newer` events after it and up to `older` before it. The hit's
+    /// row is tinted until `marked_until`.
+    Around {
+        hit: EventKey,
+        newer: u32,
+        older: u32,
+        marked_until: Instant,
+    },
+}
+
+impl TimelineWindow {
+    pub const LATEST: Self = Self::Latest { count: LATEST };
+
+    /// Opens on `hit` at `now`, as the executor's clock tells it.
+    pub fn around(hit: EventKey, now: Instant) -> Self {
+        Self::Around {
+            hit,
+            newer: AROUND,
+            older: AROUND,
+            marked_until: now + HIGHLIGHT,
+        }
+    }
+
+    pub fn hit(&self) -> Option<&EventKey> {
+        match self {
+            Self::Latest { .. } => None,
+            Self::Around { hit, .. } => Some(hit),
+        }
+    }
+
+    /// This window with another page of older events.
+    #[must_use]
+    pub fn older(&self) -> Self {
+        match self.clone() {
+            Self::Latest { count } => Self::Latest {
+                count: count + PAGE,
+            },
+            Self::Around {
+                hit,
+                newer,
+                older,
+                marked_until,
+            } => Self::Around {
+                hit,
+                newer,
+                older: older + PAGE,
+                marked_until,
+            },
+        }
+    }
+
+    /// This window with another page of newer events. The newest are always held.
+    #[must_use]
+    pub fn newer(&self) -> Self {
+        match self.clone() {
+            Self::Around {
+                hit,
+                newer,
+                older,
+                marked_until,
+            } => Self::Around {
+                hit,
+                newer: newer + PAGE,
+                older,
+                marked_until,
+            },
+            latest @ Self::Latest { .. } => latest,
+        }
+    }
+
+    /// Whether `other` opens at the same place: the newest events, or the same opening of
+    /// the same hit. Only a move to another place scrolls the tab.
+    pub fn same_place(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Latest { .. }, Self::Latest { .. }) => true,
+            (
+                Self::Around {
+                    hit, marked_until, ..
+                },
+                Self::Around {
+                    hit: other_hit,
+                    marked_until: other_until,
+                    ..
+                },
+            ) => hit == other_hit && marked_until == other_until,
+            _ => false,
+        }
+    }
+}
+
+/// The events of one window, newest first, and whether more lie beyond either end.
+#[derive(Debug)]
+pub struct TimelineSlice {
+    pub window: TimelineWindow,
+    pub events: Vec<TimelineEntry>,
+    pub more_newer: bool,
+    pub more_older: bool,
+}
+
+impl TimelineSlice {
+    /// `events` as read for `window` with one more than it holds at each end: the extra
+    /// ones are dropped and only say that more exist.
+    pub fn new(window: TimelineWindow, mut events: Vec<TimelineEntry>) -> Self {
+        let (newer, older) = match &window {
+            TimelineWindow::Latest { count } => (0, *count),
+            TimelineWindow::Around { newer, older, .. } => (*newer, *older),
+        };
+        let hit = window.hit();
+        let newer_side = events
+            .iter()
+            .filter(|e| hit.is_some_and(|h| e.key() > *h))
+            .count();
+        let older_side = events
+            .iter()
+            .filter(|e| hit.is_none_or(|h| e.key() < *h))
+            .count();
+        let beyond = |found: usize, held: u32| found > usize::try_from(held).unwrap_or(usize::MAX);
+        let (more_newer, more_older) = (beyond(newer_side, newer), beyond(older_side, older));
+        if more_newer {
+            events.remove(0);
+        }
+        if more_older {
+            events.pop();
+        }
+        Self {
+            window,
+            events,
+            more_newer,
+            more_older,
+        }
+    }
+}
 
 fn category_color(c: Category) -> u32 {
     match c {
@@ -34,6 +186,8 @@ pub struct Row {
     pub source: String,
     /// Identical events in the same minute, shown once.
     pub count: usize,
+    /// It holds the search hit the tab opened on.
+    pub hit: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -54,15 +208,23 @@ pub fn describe(entry: &TimelineEntry) -> Row {
         detail: text.detail,
         source: entry.source_tag().to_owned(),
         count: 1,
+        hit: false,
     }
 }
 
 /// Newest first, as stored: one day per header, identical events in the same minute
-/// folded into one row.
-pub fn present(entries: &[TimelineEntry], now: DateTime<Local>) -> Vec<Day> {
+/// folded into one row. The row with `hit` in it is marked as the hit's.
+pub fn present(
+    entries: &[TimelineEntry],
+    now: DateTime<Local>,
+    hit: Option<&EventKey>,
+) -> Vec<Day> {
     let mut days: Vec<Day> = Vec::new();
     for entry in entries {
-        let next = describe(entry);
+        let next = Row {
+            hit: hit.is_some_and(|h| *h == entry.key()),
+            ..describe(entry)
+        };
         let label = day(next.at, now);
         if days.last().is_none_or(|d| d.label != label) {
             days.push(Day {
@@ -74,6 +236,7 @@ pub fn present(entries: &[TimelineEntry], now: DateTime<Local>) -> Vec<Day> {
         match rows.last_mut() {
             Some(last) if same_moment(last, &next) => {
                 last.count += 1;
+                last.hit |= next.hit;
                 if last.detail != next.detail {
                     last.detail = None;
                 }
@@ -91,9 +254,84 @@ fn same_moment(a: &Row, b: &Row) -> bool {
         && a.at.timestamp().div_euclid(60) == b.at.timestamp().div_euclid(60)
 }
 
-pub fn render(days: &[Day]) -> Div {
-    if days.is_empty() {
-        return div()
+/// What the tab lists, top to bottom. Each is a direct child of the scrolling body, so
+/// the body can scroll to one by its index.
+#[derive(Debug, PartialEq)]
+pub enum Item {
+    Newer,
+    Day { label: String, first: bool },
+    Row(Row),
+    Older,
+}
+
+pub fn items(slice: &TimelineSlice, now: DateTime<Local>) -> Vec<Item> {
+    let mut items = Vec::new();
+    if slice.more_newer {
+        items.push(Item::Newer);
+    }
+    for (i, d) in present(&slice.events, now, slice.window.hit())
+        .into_iter()
+        .enumerate()
+    {
+        items.push(Item::Day {
+            label: d.label,
+            first: i == 0,
+        });
+        items.extend(d.rows.into_iter().map(Item::Row));
+    }
+    if slice.more_older {
+        items.push(Item::Older);
+    }
+    items
+}
+
+/// The item to scroll to the top: a few above the hit's row. `None` for the top.
+pub fn anchor(items: &[Item]) -> Option<usize> {
+    items
+        .iter()
+        .position(|i| matches!(i, Item::Row(r) if r.hit))
+        .map(|ix| ix.saturating_sub(CONTEXT))
+}
+
+/// The day of the item at the top of the scrolled tab, once that day's header has
+/// scrolled out above it.
+pub fn pinned_day(items: &[Item], top: usize) -> Option<String> {
+    let top = top.min(items.len().checked_sub(1)?);
+    let (at, label) = items[..=top]
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, item)| match item {
+            Item::Day { label, .. } => Some((i, label)),
+            _ => None,
+        })?;
+    (at < top).then(|| label.clone())
+}
+
+/// The day header held over the top of the scrolled tab.
+pub fn pinned(day: &str) -> Div {
+    let selector = format!("pinned-day: {day}");
+    div()
+        .debug_selector(|| selector)
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .px(space::XL)
+        .pt(space::XS)
+        .bg(rgb(color::BG))
+        .child(day_header(day, true))
+}
+
+/// The tab's `items`, as the scrolling body's children. `now` is the executor's clock.
+pub fn render(
+    items: Vec<Item>,
+    window: &TimelineWindow,
+    now: Instant,
+    cx: &mut Context<AppView>,
+) -> Vec<AnyElement> {
+    if items.is_empty() {
+        let empty = div()
             .pt(space::XL)
             .flex()
             .flex_col()
@@ -106,17 +344,85 @@ pub fn render(days: &[Day]) -> Div {
                     .child("No events yet"),
             )
             .child(label("They appear as snapshots change."));
+        return vec![empty.into_any_element()];
     }
+    let marked =
+        matches!(window, TimelineWindow::Around { marked_until, .. } if now < *marked_until);
+    items
+        .into_iter()
+        .map(|item| match item {
+            Item::Newer => more(
+                "timeline-newer",
+                "Show newer events",
+                TimelineWindow::newer,
+                cx,
+            ),
+            Item::Day { label, first } => day_header(&label, first).into_any_element(),
+            Item::Row(r) => row_view(&r, marked && r.hit).into_any_element(),
+            Item::Older => more(
+                "timeline-older",
+                "Show older events",
+                TimelineWindow::older,
+                cx,
+            ),
+        })
+        .collect()
+}
+
+/// A button that loads another page of the window.
+fn more(
+    id: &'static str,
+    text: &'static str,
+    next: fn(&TimelineWindow) -> TimelineWindow,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
     div()
+        .my(space::S)
         .flex()
-        .flex_col()
-        .children(days.iter().enumerate().map(|(i, d)| {
-            div()
-                .flex()
-                .flex_col()
-                .child(day_header(&d.label, i == 0))
-                .children(d.rows.iter().map(row_view))
-        }))
+        .justify_center()
+        .child(
+            button(Button::Secondary, id)
+                .child(text)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let window = next(&this.timeline);
+                    this.show_timeline(window, cx);
+                })),
+        )
+        .into_any_element()
+}
+
+/// Above the tab from the moment it asks for the events around a search hit: when the
+/// hit happened, and the way back. Shown before they load, so the scrolling body below
+/// it is already where it will be when it scrolls to the hit.
+pub fn banner(window: &TimelineWindow, cx: &mut Context<AppView>) -> Option<Div> {
+    let hit = window.hit()?.ts.with_timezone(&Local);
+    let when = format!("{} {}", day(hit, Local::now()), hit.format("%H:%M"));
+    Some(
+        div()
+            .debug_selector(|| "timeline-banner".to_owned())
+            .px(space::XL)
+            .py(space::S)
+            .flex()
+            .items_center()
+            .gap(space::M)
+            .border_b_1()
+            .border_color(rgb(color::BORDER))
+            .bg(tint(color::ACCENT))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(text::META)
+                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .child(format!("Events around the search hit from {when}")),
+            )
+            .child(
+                button(Button::Secondary, "back-to-latest")
+                    .child("Back to latest")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_timeline(TimelineWindow::LATEST, cx);
+                    })),
+            ),
+    )
 }
 
 pub fn day_header(day: &str, first: bool) -> Div {
@@ -237,9 +543,11 @@ pub fn sentence(r: &Row) -> Div {
         })
 }
 
-fn row_view(r: &Row) -> Div {
+/// A row; the search hit's, while `marked`, on an accent tint.
+fn row_view(r: &Row, marked: bool) -> Div {
     let title = text_of(&r.title);
-    div()
+    let selector = format!("marked: {title}");
+    let row = div()
         .debug_selector(|| format!("event: {title}"))
         .h(px(32.))
         .flex()
@@ -254,7 +562,17 @@ fn row_view(r: &Row) -> Div {
                 .text_size(text::SMALL)
                 .text_color(rgb(color::TEXT_MUTED))
                 .child(r.source.clone()),
-        )
+        );
+    if !marked {
+        return row;
+    }
+    div()
+        .debug_selector(|| selector)
+        .mx(px(-8.))
+        .px(space::S)
+        .rounded(radius::M)
+        .bg(tint(color::ACCENT))
+        .child(row)
 }
 
 #[cfg(test)]
@@ -307,7 +625,7 @@ mod tests {
                 started("npm ci"),
             ),
         ];
-        let days = present(&entries, now);
+        let days = present(&entries, now, None);
         assert_eq!(
             shown(&days),
             [
@@ -346,6 +664,95 @@ mod tests {
     }
 
     #[test]
+    fn a_window_drops_the_extra_events_and_says_more_lie_beyond() {
+        let now = Local.with_ymd_and_hms(2026, 10, 19, 18, 0, 0).unwrap();
+        let job = |m: i64| TimelineEntry {
+            source: "ssh".into(),
+            seq: 100 - m,
+            ts: (now - Duration::minutes(m)).with_timezone(&Utc),
+            kind: "process_started".into(),
+            data: json!({ "cmdline": format!("job {m}") }),
+        };
+        let jobs = |minutes: std::ops::RangeInclusive<i64>| minutes.map(job).collect::<Vec<_>>();
+        let held = |s: &TimelineSlice| -> Vec<String> {
+            s.events
+                .iter()
+                .map(|e| e.data["cmdline"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let latest = TimelineSlice::new(TimelineWindow::Latest { count: 3 }, jobs(0..=3));
+        assert_eq!(held(&latest), ["job 0", "job 1", "job 2"]);
+        assert_eq!((latest.more_newer, latest.more_older), (false, true));
+        let all = TimelineSlice::new(TimelineWindow::Latest { count: 4 }, jobs(0..=3));
+        assert_eq!((all.events.len(), all.more_older), (4, false));
+        assert_eq!(
+            anchor(&items(&all, now)),
+            None,
+            "the newest open at the top"
+        );
+
+        let around = TimelineWindow::Around {
+            hit: job(5).key(),
+            newer: 2,
+            older: 2,
+            marked_until: Instant::now(),
+        };
+        // Read with one more each side: three newer, the hit, three older.
+        let slice = TimelineSlice::new(around.clone(), jobs(2..=8));
+        assert_eq!(held(&slice), ["job 3", "job 4", "job 5", "job 6", "job 7"]);
+        assert_eq!((slice.more_newer, slice.more_older), (true, true));
+        let listed = items(&slice, now);
+        assert_eq!(listed.first(), Some(&Item::Newer));
+        assert_eq!(listed.last(), Some(&Item::Older));
+        let hit_at = listed
+            .iter()
+            .position(|i| matches!(i, Item::Row(r) if r.hit))
+            .unwrap();
+        assert_eq!(hit_at, 4, "Show newer, the day, job 3, job 4, then the hit");
+        assert_eq!(anchor(&listed), Some(hit_at - CONTEXT));
+
+        let near_top = TimelineSlice::new(around, jobs(4..=8));
+        assert_eq!(held(&near_top)[0], "job 4");
+        assert!(!near_top.more_newer, "only one event is newer than the hit");
+    }
+
+    #[test]
+    fn the_day_scrolled_past_is_pinned() {
+        let now = Local.with_ymd_and_hms(2026, 10, 19, 18, 0, 0).unwrap();
+        let started = |ago: Duration| {
+            entry(
+                "ssh",
+                "process_started",
+                now - ago,
+                json!({ "cmdline": format!("job {}", ago.num_minutes()) }),
+            )
+        };
+        let slice = TimelineSlice {
+            window: TimelineWindow::LATEST,
+            events: vec![
+                started(Duration::minutes(1)),
+                started(Duration::minutes(2)),
+                started(Duration::days(1)),
+                started(Duration::days(1) + Duration::minutes(1)),
+            ],
+            more_newer: false,
+            more_older: true,
+        };
+        let listed = items(&slice, now);
+        // Today, job 1, job 2, Yesterday, job 1440, job 1441, Show older.
+        let pinned = |top| pinned_day(&listed, top);
+        assert_eq!(pinned(0), None, "the header itself is at the top");
+        assert_eq!(pinned(1).as_deref(), Some("Today"));
+        assert_eq!(pinned(2).as_deref(), Some("Today"));
+        assert_eq!(pinned(3), None);
+        assert_eq!(pinned(5).as_deref(), Some("Yesterday"));
+        assert_eq!(pinned(6).as_deref(), Some("Yesterday"));
+        assert_eq!(pinned(99).as_deref(), Some("Yesterday"));
+        assert_eq!(pinned_day(&[], 0), None);
+    }
+
+    #[test]
     fn identical_events_in_one_minute_fold_into_one_row() {
         let now = Local.with_ymd_and_hms(2026, 10, 19, 18, 0, 0).unwrap();
         let exited = |secs: i64| {
@@ -356,7 +763,11 @@ mod tests {
                 json!({ "cmdline": "/lib/systemd/systemd-udevd", "duration_secs": secs }),
             )
         };
-        let days = present(&[exited(586_707), exited(586_707), exited(578_412)], now);
+        let days = present(
+            &[exited(586_707), exited(586_707), exited(578_412)],
+            now,
+            None,
+        );
         let rows = &days[0].rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].count, 3);

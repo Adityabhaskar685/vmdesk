@@ -7,6 +7,8 @@ use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use vmdesk_core::{AgentState, CredentialRef, EndpointKind, VmId, VmStatus};
 use vmdesk_db::{AgentRecord, EndpointInput, NewVm};
 
+use crate::timeline_view::TimelineSlice;
+
 use super::*;
 
 /// Keeps the tokio runtime alive for the test's duration.
@@ -95,8 +97,16 @@ fn open_lab<'a>(
     (view, cx)
 }
 
-fn shown(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+/// Runs GPUI until it is idle, then delivers the next frame, which the test platform
+/// has no loop for, and runs it again.
+fn settle(cx: &mut VisualTestContext) {
     cx.run_until_parked();
+    cx.update(Window::simulate_next_frame);
+    cx.run_until_parked();
+}
+
+fn shown(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+    settle(cx);
     cx.debug_bounds(selector).is_some()
 }
 
@@ -487,8 +497,9 @@ fn the_timeline_reads_as_sentences_under_day_headers(cx: &mut TestAppContext) {
 
     let gap = view.read_with(cx, |v, _| {
         let days = crate::timeline_view::present(
-            &v.detail.as_ref().unwrap().timeline,
+            &v.detail.as_ref().unwrap().timeline.events,
             chrono::Local::now(),
+            None,
         );
         days.into_iter()
             .flat_map(|d| d.rows)
@@ -828,6 +839,149 @@ fn search_finds_an_event_on_another_vm_and_opens_its_timeline(cx: &mut TestAppCo
         view.read_with(cx, |v, _| v.search.is_none()),
         "Esc closes it"
     );
+}
+
+/// `dev93` with 400 commands a minute apart up to now. The 350th newest is
+/// `pytest upf-tests/test_n4.py`, older than the 300 the Timeline opens with.
+fn seed_history(env: &Env) -> VmId {
+    let vm = add_vm(env, "dev93");
+    let db = env.backend.db.clone();
+    let now = Utc::now();
+    let events: Vec<_> = (1..=400u32)
+        .map(|i| {
+            let cmdline = if i == 350 {
+                "pytest upf-tests/test_n4.py".to_owned()
+            } else {
+                format!("make check-{i}")
+            };
+            let started = vmdesk_proto::EventKind::ProcessStarted {
+                pid: 1000 + i,
+                cmdline,
+                cwd: None,
+            };
+            (now - chrono::Duration::minutes(i64::from(i)), started)
+        })
+        .collect();
+    let snapshot = vmdesk_proto::Snapshot {
+        taken_at: Some(now),
+        ..vmdesk_proto::Snapshot::default()
+    };
+    env.rt
+        .block_on(db.record_snapshot(vm, "ssh", &snapshot, &events))
+        .unwrap();
+    vm
+}
+
+/// Scrolls the detail body all the way up with the mouse wheel.
+fn wheel_to_top(cx: &mut VisualTestContext) {
+    let body = cx.debug_bounds("detail-body").expect("the detail body");
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: body.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100_000.))),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+    cx.run_until_parked();
+}
+
+/// Whether the element is inside the detail body's visible area.
+fn in_view(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+    settle(cx);
+    let (Some(el), Some(body)) = (cx.debug_bounds(selector), cx.debug_bounds("detail-body")) else {
+        return false;
+    };
+    el.top() >= body.top() && el.bottom() <= body.bottom()
+}
+
+#[gpui::test]
+fn a_search_hit_opens_the_timeline_at_its_event(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let dev93 = seed_history(&env);
+    let (view, cx) = open_lab(cx, &env);
+    view.update_in(cx, |v, window, cx| {
+        let focus = v.focus.clone();
+        window.focus(&focus, cx);
+    });
+    let holds = |cx: &mut VisualTestContext, what: &str, done: fn(&TimelineSlice) -> bool| {
+        wait(cx, &view, what, |v| {
+            v.selected == Some(dev93) && v.detail.as_ref().is_some_and(|d| done(&d.timeline))
+        });
+    };
+
+    cx.simulate_keystrokes("ctrl-k u p f");
+    cx.executor().advance_clock(DEBOUNCE);
+    wait(cx, &view, "the hit", |v| {
+        matches!(
+            v.search.as_ref().map(|s| &s.state),
+            Some(SearchState::Results { .. })
+        )
+    });
+    click(cx, "hit: dev93 Started pytest upf-tests/test_n4.py");
+    holds(cx, "the events around the hit", |t| {
+        t.window.hit().is_some()
+    });
+    assert!(view.read_with(cx, |v, _| v.tab == Tab::Timeline));
+
+    let hit = "event: Started pytest upf-tests/test_n4.py";
+    let marked = "marked: Started pytest upf-tests/test_n4.py";
+    assert!(shown(cx, marked), "the hit's row is tinted");
+    assert!(in_view(cx, hit), "and scrolled to");
+    assert!(
+        in_view(cx, "event: Started make check-347"),
+        "with the newer events above it"
+    );
+    assert!(!in_view(cx, "event: Started make check-345"));
+    let top_day = view.read_with(cx, |v, _| {
+        let d = v.detail.as_ref().unwrap();
+        let top = d
+            .timeline
+            .events
+            .iter()
+            .find(|e| e.data["cmdline"] == "make check-346");
+        vmdesk_core::human::day(top.unwrap().ts.with_timezone(&Local), Local::now())
+    });
+    assert!(
+        shown(cx, dynamic(format!("pinned-day: {top_day}"))),
+        "and their day pinned over them, its header being far above"
+    );
+    assert!(shown(cx, "timeline-banner") && shown(cx, "back-to-latest"));
+    assert!(
+        shown(cx, "timeline-newer"),
+        "100 of 349 newer events are held"
+    );
+    assert!(!shown(cx, "timeline-older"), "all 50 older ones are");
+
+    cx.executor().advance_clock(HIGHLIGHT);
+    assert!(!shown(cx, marked), "the tint goes after a few seconds");
+    assert!(in_view(cx, hit), "the row stays where it was");
+
+    wheel_to_top(cx);
+    assert!(in_view(cx, "timeline-newer") && !in_view(cx, hit));
+    click(cx, "timeline-newer");
+    holds(cx, "200 more newer events", |t| {
+        t.events.len() == 1 + 300 + 50
+    });
+    assert!(
+        in_view(cx, "timeline-newer") && !in_view(cx, hit),
+        "more events do not move the view back to the hit; 49 newer ones are still out"
+    );
+
+    click(cx, "back-to-latest");
+    holds(cx, "the newest events", |t| {
+        t.window == TimelineWindow::LATEST
+    });
+    assert!(!shown(cx, "timeline-banner"));
+    assert!(!shown(cx, hit), "the hit is older than the newest 300");
+    assert!(
+        in_view(cx, "event: Started make check-1"),
+        "back at the top"
+    );
+    assert!(
+        !shown(cx, dynamic(format!("pinned-day: {top_day}"))),
+        "where the day's own header shows"
+    );
+    assert!(shown(cx, "timeline-older"));
 }
 
 #[gpui::test]

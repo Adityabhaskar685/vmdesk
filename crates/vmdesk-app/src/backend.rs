@@ -15,15 +15,15 @@ use vmdesk_core::{
     CredentialRef, EndpointKind, Error as CoreError, Hop, HostKey, HostKeyStore, Vm, VmId, VmStatus,
 };
 use vmdesk_db::{
-    AgentRecord, Db, EndpointInput, ListFilter, NewVm, Note, NoteId, SearchHit, SessionId,
-    TimelineEntry, VmPatch, WorkSession,
+    AgentRecord, Db, EndpointInput, ListFilter, NewVm, Note, NoteId, SearchHit, SessionId, VmPatch,
+    WorkSession,
 };
 use vmdesk_proto::Snapshot;
 use vmdesk_reach::Monitor;
 use vmdesk_transport::{SshSession, Transport};
 
-/// Events shown in the timeline tab.
-const TIMELINE_LIMIT: u32 = 300;
+use crate::timeline_view::{TimelineSlice, TimelineWindow};
+
 /// Work sessions shown in the sessions tab.
 const SESSION_LIMIT: u32 = 100;
 /// Search hits shown, newest first.
@@ -91,7 +91,7 @@ pub enum KeyProblem {
 /// The detail pane's data for one VM.
 pub struct Detail {
     pub snapshot: Option<Snapshot>,
-    pub timeline: Vec<TimelineEntry>,
+    pub timeline: TimelineSlice,
     /// The VM's agent, once one has answered a sync. Its state is in the VM's status.
     pub agent: Option<AgentRecord>,
     /// Newest first.
@@ -165,9 +165,21 @@ impl Backend {
         })
     }
 
-    pub fn detail(&self, vm: VmId) -> impl Future<Output = anyhow::Result<Detail>> + use<> {
+    /// `vm`'s detail, with the events of `window` for the Timeline tab.
+    pub fn detail(
+        &self,
+        vm: VmId,
+        window: TimelineWindow,
+    ) -> impl Future<Output = anyhow::Result<Detail>> + use<> {
         let db = self.db.clone();
         self.run(async move {
+            // One more each side than the window holds, to tell whether more exist.
+            let events = match &window {
+                TimelineWindow::Latest { count } => db.timeline(vm, count + 1, None).await?,
+                TimelineWindow::Around {
+                    hit, newer, older, ..
+                } => db.timeline_around(vm, hit, newer + 1, older + 1).await?,
+            };
             let snapshot = db.latest_snapshot(vm).await?;
             let sessions = db.sessions(vm, SESSION_LIMIT).await?;
             let notes = db.notes(vm).await?;
@@ -176,7 +188,7 @@ impl Backend {
                     .as_ref()
                     .map(|s| current_work(s, sessions.first(), &notes)),
                 snapshot,
-                timeline: db.timeline(vm, TIMELINE_LIMIT, None).await?,
+                timeline: TimelineSlice::new(window, events),
                 agent: db.agent(vm).await?,
                 sessions,
                 notes,
