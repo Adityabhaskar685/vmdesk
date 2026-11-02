@@ -756,7 +756,7 @@ fn a_note_added_on_the_card_lands_on_the_latest_session(cx: &mut TestAppContext)
     wait(cx, &view, "the note to go", |v| {
         v.detail.as_ref().is_some_and(|d| d.notes.is_empty())
     });
-    assert!(notes_of(&env, vm).is_empty());
+    assert_eq!(notes_of(&env, vm), []);
     assert!(!shown(cx, "note: flaky n4 test"));
 }
 

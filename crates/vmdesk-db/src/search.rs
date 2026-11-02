@@ -166,7 +166,7 @@ mod tests {
             found(&db, r#"pytest" OR "x"#).await.is_empty(),
             "no FTS syntax"
         );
-        assert!(found(&db, "teardown NEAR fix").await.is_empty());
+        assert_eq!(found(&db, "teardown NEAR fix").await, Vec::<String>::new());
         assert!(matches!(
             db.search(" -- ", None, 5).await,
             Err(Error::Invalid(_))

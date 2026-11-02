@@ -642,7 +642,7 @@ LISTEN 0      4096   127.0.0.53%lo:53    0.0.0.0:*
             "Fix: handle\ttabs in subject"
         );
         assert_eq!(snap.repos[1].branch, None);
-        assert!(snap.unavailable.is_empty());
+        assert_eq!(snap.unavailable, Vec::<String>::new());
     }
 
     #[test]

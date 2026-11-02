@@ -435,7 +435,7 @@ mod tests {
             ],
             "ls was too short to count; sleep is neither long-lived nor on the watchlist"
         );
-        assert!(diff(&a, &a).is_empty());
+        assert_eq!(diff(&a, &a), []);
 
         // The same process, its start time off by a second: no event. A reused pid: both.
         let mut c = b.clone();

@@ -85,7 +85,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(db.host_keys(vm.id).await.unwrap().is_empty());
+        assert_eq!(db.host_keys(vm.id).await.unwrap(), []);
 
         let k1 = HostKey {
             key_type: "ssh-ed25519".into(),
@@ -105,10 +105,10 @@ mod tests {
         assert_eq!(db.host_keys(vm.id).await.unwrap(), [k2]);
 
         assert_eq!(db.forget_host_keys(vm.id).await.unwrap(), 1);
-        assert!(db.host_keys(vm.id).await.unwrap().is_empty());
+        assert_eq!(db.host_keys(vm.id).await.unwrap(), []);
 
         db.trust_host_key(vm.id, &k1).await.unwrap();
         db.delete_vm(vm.id).await.unwrap();
-        assert!(db.host_keys(vm.id).await.unwrap().is_empty());
+        assert_eq!(db.host_keys(vm.id).await.unwrap(), []);
     }
 }

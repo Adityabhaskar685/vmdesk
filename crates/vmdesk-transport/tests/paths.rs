@@ -30,6 +30,7 @@ struct TestServer {
     cats: HashSet<ChannelId>,
 }
 
+#[allow(clippy::unused_async_trait_impl)] // russh's handler methods are async; a fake answers at once
 impl server::Handler for TestServer {
     type Error = russh::Error;
 
@@ -292,7 +293,7 @@ async fn exec_direct_and_through_bastion() {
     // stderr and exit status come through.
     let out = session.exec("nope").await.unwrap();
     assert_eq!(out.status, Some(127));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, []);
     assert!(
         String::from_utf8(out.stderr)
             .unwrap()
@@ -326,7 +327,7 @@ async fn unknown_and_changed_host_keys_block() {
         fingerprint,
         vmdesk_transport::host_key(&server_key).fingerprint
     );
-    assert!(store.host_keys(target.id).await.unwrap().is_empty());
+    assert_eq!(store.host_keys(target.id).await.unwrap(), []);
 
     transport(&store, true)
         .session(&target, &inventory(&[&target]))
@@ -420,7 +421,7 @@ async fn stream_reaches_target_ssh_port_through_bastion() {
     assert_eq!(&banner, b"SSH-2.0-");
     assert_eq!(forwards.load(Ordering::SeqCst), 1);
     // The target's own key is left to the real ssh client.
-    assert!(store.host_keys(target.id).await.unwrap().is_empty());
+    assert_eq!(store.host_keys(target.id).await.unwrap(), []);
     std::fs::remove_file(key).ok();
 }
 

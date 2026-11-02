@@ -650,7 +650,7 @@ mod tests {
         let bounds = |times: &[i64]| -> Vec<(usize, usize)> {
             split(times).into_iter().map(|r| (r.start, r.end)).collect()
         };
-        assert!(bounds(&[]).is_empty());
+        assert_eq!(bounds(&[]), []);
         assert_eq!(bounds(&[T0]), [(0, 1)]);
         assert_eq!(
             bounds(&[T0, T0 + gap, T0 + 2 * gap]),

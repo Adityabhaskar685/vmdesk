@@ -288,7 +288,7 @@ Host *
             Some("fe80::1")
         );
         let none = parse("Host a\n  ProxyJump none\nHost *\n  ProxyJump b\n", None);
-        assert!(none[0].proxy_jump.is_empty());
+        assert_eq!(none[0].proxy_jump, Vec::<String>::new());
     }
 
     #[test]

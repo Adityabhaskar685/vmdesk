@@ -181,7 +181,7 @@ mod tests {
         let commands = fake.commands.lock().unwrap().clone();
         assert_eq!(commands.len(), 1, "{commands:?}");
         assert!(commands[0].contains(MARKER));
-        assert!(fake.received().is_empty());
+        assert_eq!(fake.received(), []);
     }
 
     #[tokio::test]
