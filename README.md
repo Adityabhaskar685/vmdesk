@@ -3,7 +3,8 @@
 VMDesk keeps track of the development VMs you work on: where each one is, how to reach it, what is
 running there, and what you were doing on it. It is a native desktop app and a `vmdesk` CLI. Both
 run on your laptop, keep their state in a local SQLite database, and reach every VM over SSH,
-directly or through jump hosts. An optional agent on a VM records history while your laptop is
+directly or through jump hosts. The app has a built-in terminal with tabs and splits, so a shell
+on any VM is one click away. An optional agent on a VM records history while your laptop is
 away.
 
 ![The VMDesk window: a list of VMs on the left, and the selected VM's current work, system and tmux sessions on the right](docs/screenshots/overview.png)
@@ -45,12 +46,6 @@ zig build -Demit-lib-vt -Doptimize=ReleaseFast --prefix ~/.local
 `~/.local/share/pkgconfig` as well (set `PKG_CONFIG_PATH` for another prefix), and links it
 statically, so the app does not need it at run time. The libghostty version is pinned: rebuild
 it when updating VMDesk.
-
-Shell prompts often use Powerline or Nerd Font glyphs from the *remote* machine's theme. Fonts
-are local to the client, so install one on the machine running VMDesk (for example
-`fonts-hack-ttf` plus `Hack Nerd Font`); the terminal picks it up automatically, or set
-`VMDESK_TERM_FONT` to another family. Missing glyphs fall back to other fixed-width fonts
-rather than a proportional one, which would break the grid.
 
 Then install VMDesk as a desktop app for your user:
 
@@ -115,36 +110,63 @@ when it did; `vmdesk status` and `vmdesk agent status` say it too), and four vie
 - **Timeline** tells each event as a sentence under a day header, with its source (`agent`,
   `ssh` or `laptop`). The day of the events at the top stays pinned as you scroll. It holds
   the newest 300 events; **Show older events** at its foot loads more.
-- **Terminal** opens an embedded shell on the VM over the same SSH path. Vim, top and tmux work,
-  and resizing the window resizes the remote pty. The wheel scrolls the scrollback (or goes to a
-  full-screen program that reads the mouse), Shift+PageUp/PageDown page through it, and typing
-  returns to the bottom. Selecting text copies it to the primary selection; Ctrl+Shift+C and
-  Ctrl+Shift+V use the clipboard, and a middle click pastes the primary selection. A multi-line
-  paste asks first unless the program turned on bracketed paste.
-  The strip above the grid holds one tab per shell: **+** (or Ctrl+Shift+T) opens another, the
-  **×** beside a tab (or Ctrl+Shift+W) closes it, and closing the last one leaves the Terminal
-  tab. Ctrl+Shift+M, or the corner button on the strip, makes the terminal fill the window and
-  hides the machine list and header until you restore it. Shells keep running while you look at
-  another view or machine. The inspector on the right (Ctrl+Shift+I, or the strip's panel
-  button) shows the machine's state beside its shells: what you were working on, load, memory,
-  the fullest disk and what runs there.
-  Each shell is a card that can be split: Ctrl+Shift+D (or the card's split button) opens a
-  shell to its right, Ctrl+Shift+E one below it. The focused card shows its buttons; the others
-  show them on hover. Ctrl+Shift+Z, or the card's zoom button, shows one shell alone over the tab
-  and brings the splits back on the second press. `exit` or Ctrl+D closes the shell's card, and
-  the last card closes the tab. A dropped connection keeps the card, with **Reconnect**.
+- **Terminal** opens shells on the VM inside the app; see
+  [Work in the built-in terminal](#work-in-the-built-in-terminal).
 
 ![The Sessions tab: an ongoing titled session with its repos, commands and a note, and an older untitled session](docs/screenshots/sessions.png)
 
 ![The Timeline tab: events such as started and exited commands, a commit, a branch switch and a container start, grouped under Today and Yesterday](docs/screenshots/timeline.png)
 
-**Search events**, at the foot of the list or with Ctrl+K, searches the events of every VM. Each
+**Search events**, in the top bar or with Ctrl+K, searches the events of every VM. Each
 word must match the start of a word, so `upf` finds `pytest upf-tests/n4.py`. Click a result to
 open that VM's Timeline at the event, however old: its row is tinted for a few seconds, **Show
 newer events** and **Show older events** load more around it, and **Back to latest** returns to
 the newest events.
 
 ![Search across VMs: three events matching "cargo", newest first, each with its VM](docs/screenshots/search.png)
+
+### Work in the built-in terminal
+
+**Open terminal** opens a shell on the selected VM inside VMDesk, over the same SSH path the app
+uses, jump hosts included. Nothing extra runs on the VM. The terminal is Ghostty's terminal core
+(libghostty-vt), so `vim`, `top`, `htop`, `tmux` and other full-screen programs work, with
+true colour, mouse support and bracketed paste, and resizing the window resizes the remote pty.
+
+![The built-in terminal: build-01 with two shells side by side, a test run on the left and git and a service log on the right, and the inspector with the machine's state](docs/screenshots/terminal.png)
+
+- **Shells as cards.** Split a shell to the right or below, as often as you like. The focused
+  card shows its buttons; the others show them on hover. Zoom shows one shell alone over the tab
+  and brings the splits back on the second press.
+- **Tabs.** The strip above the shells holds one tab per set of shells. **+** opens another.
+- **Several machines at once.** Each machine's shells keep running while you look at another
+  machine; its tab in the top bar brings them back.
+- **Inspector.** The panel on the right shows the machine's state beside its shells: what you
+  were working on, load, memory, the fullest disk and what runs there.
+- **Closing.** `exit` or Ctrl+D closes the shell's card, and the last card closes the tab. A
+  dropped connection keeps the card, with **Reconnect**.
+- **Scrollback and copy.** The wheel scrolls the scrollback (or goes to a full-screen program
+  that reads the mouse), Shift+PageUp/PageDown page through it, and typing returns to the
+  bottom. Selecting text copies it to the primary selection; Ctrl+Shift+C and Ctrl+Shift+V use
+  the clipboard, and a middle click pastes the primary selection. A multi-line paste asks first
+  unless the program turned on bracketed paste.
+
+| Keys | Does |
+| --- | --- |
+| Ctrl+Shift+D | Split the shell to the right |
+| Ctrl+Shift+E | Split the shell below |
+| Ctrl+Shift+Z | Zoom the shell, or bring its splits back |
+| Ctrl+Shift+T | New tab of shells |
+| Ctrl+Shift+W | Close the shell |
+| Ctrl+Shift+M | Fill the window with the terminal, or restore |
+| Ctrl+Shift+I | Show or hide the inspector |
+| Ctrl+Shift+C / Ctrl+Shift+V | Copy / paste |
+| Ctrl+Shift+B | Fold the machine list to a rail, or unfold it |
+| Ctrl+Shift+P | Theme picker; terminals take the theme's colours |
+
+Prompts that use Powerline or Nerd Font glyphs need such a font on the machine running VMDesk
+(fonts are local to the client). The terminal uses the first installed Nerd Font it knows, else
+the built-in JetBrains Mono; `VMDESK_TERM_FONT` picks another. **Open in external terminal** in
+the **⋯** menu starts your own terminal app with `ssh` instead.
 
 The header's buttons:
 
@@ -352,8 +374,11 @@ crates/
   vmdesk-collect/     Probe script and parser, snapshot diff, SSH collector, agent sync and
                       install, poller, current-work summary
   vmdesk-agent/       The on-VM agent
+  vmdesk-terminal/    The built-in terminal's core: libghostty-vt bindings (the one crate
+                      allowed `unsafe`)
   vmdesk-daemon/      The `vmdesk` CLI
   vmdesk-app/         The desktop app (GPUI)
 migrations/           SQLx migrations, embedded at compile time
 docs/screenshots/     README screenshots, from the demo data
+packaging/            The launcher entry and icons that install.sh installs
 ```
