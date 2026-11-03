@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=VMDesk
+GenericName=VM Manager
+Comment=Keep track of your development VMs: reach them, see what runs there, open a shell
+Exec=vmdesk-app
+Icon=vmdesk
+Terminal=false
+Categories=Development;
+Keywords=vm;ssh;terminal;server;remote;devops;
+StartupWMClass=vmdesk
+# GPUI never answers the launch's startup notification, so with this on GNOME shows a busy
+# cursor until it times out, though the window is already open.
+StartupNotify=false

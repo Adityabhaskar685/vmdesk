@@ -52,8 +52,22 @@ are local to the client, so install one on the machine running VMDesk (for examp
 `VMDESK_TERM_FONT` to another family. Missing glyphs fall back to other fixed-width fonts
 rather than a proportional one, which would break the grid.
 
-Build the app and the CLI together, because the app runs `vmdesk proxy` and `vmdesk askpass` from
-its own directory:
+Then install VMDesk as a desktop app for your user:
+
+```sh
+rustup target add x86_64-unknown-linux-musl   # once, so the agent can be built too
+./install.sh                                  # build, then install
+./install.sh uninstall                        # remove it again
+```
+
+`install.sh` puts `vmdesk-app`, `vmdesk` and the static agent `vmdesk-agent-x86_64` side by
+side in `~/.local/bin`, a **VMDesk** launcher in `~/.local/share/applications`, and the icon
+(SVG plus PNGs from 16 to 512 px) in `~/.local/share/icons/hicolor`, so you can start it from
+the app grid or pin it to the dock. Run it again after pulling changes to update. Uninstalling
+keeps your VMs and history in `~/.local/share/vmdesk`.
+
+To build without installing, build the app and the CLI together, because the app runs
+`vmdesk proxy` and `vmdesk askpass` from its own directory:
 
 ```sh
 cargo build --release -p vmdesk-daemon -p vmdesk-app

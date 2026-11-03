@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262637"/>
+      <stop offset="1" stop-color="#11111b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b4befe"/>
+      <stop offset="1" stop-color="#89b4fa"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e1e2e"/>
+      <stop offset="1" stop-color="#181825"/>
+    </linearGradient>
+  </defs>
+  <!-- the tile -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#tile)"/>
+  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none" stroke="#45475a" stroke-opacity="0.7"/>
+  <!-- two machines behind, stacked -->
+  <rect x="36" y="24" width="64" height="40" rx="8" fill="#45475a"/>
+  <rect x="30" y="32" width="70" height="44" rx="9" fill="#585b70"/>
+  <!-- the front machine: a terminal -->
+  <rect x="22" y="42" width="84" height="62" rx="11" fill="url(#screen)" stroke="url(#accent)" stroke-width="3"/>
+  <circle cx="34" cy="53" r="3" fill="#f38ba8"/>
+  <circle cx="44" cy="53" r="3" fill="#f9e2af"/>
+  <circle cx="54" cy="53" r="3" fill="#a6e3a1"/>
+  <polyline points="36,70 46,79 36,88" fill="none" stroke="url(#accent)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="54" y1="88" x2="76" y2="88" stroke="#cdd6f4" stroke-width="5" stroke-linecap="round"/>
+</svg>
