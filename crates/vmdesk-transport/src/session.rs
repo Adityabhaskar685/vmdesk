@@ -10,6 +10,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use vmdesk_core::{ByteStream, Error, ExecOutput, RemoteExec, Result, Tunnel, Vm, VmId};
 
 use crate::hostkey::Client;
+use crate::shell::Shell;
 
 pub struct SshSession {
     vm: VmId,
@@ -101,7 +102,40 @@ impl SshSession {
             .await;
     }
 
-    fn err(&self, e: &russh::Error) -> Error {
+    /// Opens an interactive shell on a pty of `cols` × `rows` cells.
+    ///
+    /// The terminal name tells the remote host which capabilities to advertise. This app
+    /// uses `xterm-256color`, the same as its external terminal, because remote machines
+    /// rarely have a terminfo entry for Ghostty or Kitty.
+    pub async fn open_shell(&self, cols: u16, rows: u16) -> Result<Shell> {
+        self.touch();
+        let channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| self.err(&e))?;
+        channel
+            .request_pty(
+                true,
+                "xterm-256color",
+                u32::from(cols),
+                u32::from(rows),
+                0,
+                0,
+                &[],
+            )
+            .await
+            .map_err(|e| self.err(&e))?;
+        channel
+            .request_shell(true)
+            .await
+            .map_err(|e| self.err(&e))?;
+        let (reader, writer) = channel.split();
+        self.touch();
+        Ok(Shell::new(self.name.clone(), reader, writer))
+    }
+
+    pub(crate) fn err(&self, e: &russh::Error) -> Error {
         Error::Connect(format!("{}: {e}", self.name))
     }
 }

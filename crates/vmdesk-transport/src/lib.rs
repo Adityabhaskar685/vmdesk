@@ -6,6 +6,7 @@ mod connect;
 mod hostkey;
 pub mod keychain;
 mod session;
+mod shell;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +15,7 @@ pub use connect::{TcpConnector, Transport};
 pub use hostkey::host_key;
 pub use russh;
 pub use session::SshSession;
+pub use shell::{Shell, ShellReader, ShellWriter};
 
 /// Per-hop connect timeout
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

@@ -10,6 +10,11 @@ pub enum Icon {
     Plus,
     Terminal,
     Close,
+    Expand,
+    Collapse,
+    Sidebar,
+    SplitRow,
+    SplitColumn,
 }
 
 enum Stroke {
@@ -57,6 +62,34 @@ impl Icon {
             Self::Close => &[
                 Stroke::Line(&[(4.5, 4.5), (11.5, 11.5)]),
                 Stroke::Line(&[(11.5, 4.5), (4.5, 11.5)]),
+            ],
+            // Corners pointing out: the pane fills the window.
+            Self::Expand => &[
+                Stroke::Line(&[(3., 6.), (3., 3.), (6., 3.)]),
+                Stroke::Line(&[(10., 3.), (13., 3.), (13., 6.)]),
+                Stroke::Line(&[(13., 10.), (13., 13.), (10., 13.)]),
+                Stroke::Line(&[(6., 13.), (3., 13.), (3., 10.)]),
+            ],
+            // The same corners turned in: back to the normal layout.
+            Self::Collapse => &[
+                Stroke::Line(&[(3., 6.), (6., 6.), (6., 3.)]),
+                Stroke::Line(&[(10., 3.), (10., 6.), (13., 6.)]),
+                Stroke::Line(&[(13., 10.), (10., 10.), (10., 13.)]),
+                Stroke::Line(&[(6., 13.), (6., 10.), (3., 10.)]),
+            ],
+            Self::Sidebar => &[
+                Stroke::Line(&[(3., 3.5), (13., 3.5), (13., 12.5), (3., 12.5), (3., 3.5)]),
+                Stroke::Line(&[(6.5, 3.5), (6.5, 12.5)]),
+            ],
+            // A pane split side by side (a vertical divider).
+            Self::SplitRow => &[
+                Stroke::Line(&[(3., 3.5), (13., 3.5), (13., 12.5), (3., 12.5), (3., 3.5)]),
+                Stroke::Line(&[(8., 3.5), (8., 12.5)]),
+            ],
+            // A pane split one above the other (a horizontal divider).
+            Self::SplitColumn => &[
+                Stroke::Line(&[(3., 3.5), (13., 3.5), (13., 12.5), (3., 12.5), (3., 3.5)]),
+                Stroke::Line(&[(3., 8.), (13., 8.)]),
             ],
         }
     }

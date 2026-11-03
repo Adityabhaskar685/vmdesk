@@ -1,0 +1,18 @@
+[package]
+name = "vmdesk-terminal"
+description = "libghostty-vt bindings and safe wrapper for the embedded terminal"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+[build-dependencies]
+bindgen = { version = "0.73", default-features = false, features = ["runtime"] }
+pkg-config = "0.3.34"
+
+# The workspace forbids unsafe code. This crate is the one exception: all of it lives in
+# `src/sys.rs`, the module that talks to libghostty-vt. `deny` (not `forbid`) leaves room
+# for that module's `#[allow(unsafe_code)]`.
+[lints.rust]
+unsafe_code = "deny"

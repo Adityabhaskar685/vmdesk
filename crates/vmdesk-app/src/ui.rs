@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use chrono::{Local, Utc};
 use gpui::{
-    AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, ScrollHandle,
-    SharedString, Window, div, point, prelude::*, px, rgb, transparent_black,
+    AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    ScrollHandle, SharedString, Window, div, point, prelude::*, px, rgb,
 };
 use vmdesk_core::human::ago;
 use vmdesk_core::{AgentState, Headline, Hop, SshState, Vm, VmId, VmStatus};
@@ -23,6 +23,7 @@ use crate::kit::{
     menu_disabled, menu_separator, pill, popover,
 };
 use crate::search_view::{DEBOUNCE, Search, SearchState};
+use crate::term_view::{ShellExited, TerminalView};
 use crate::theme::{
     CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint, tone_color,
 };
@@ -35,11 +36,13 @@ const RELOAD: Duration = Duration::from_secs(5);
 const OPEN_VM_INTERVAL: Duration = Duration::from_mins(2);
 const SIDEBAR_WIDTH: f32 = 280.;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Overview,
     Sessions,
     Timeline,
+    /// A live shell on the selected VM, embedded in the pane.
+    Terminal,
 }
 
 /// The one inline text field open in the detail pane. Enter saves it, Esc closes it.
@@ -68,6 +71,173 @@ type WorkChange = std::pin::Pin<Box<dyn Future<Output = anyhow::Result<Option<St
 enum Confirm {
     RemoveVm(VmId),
     RemoveAgent(VmId),
+}
+
+/// Which way a terminal split lays its two halves out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SplitDir {
+    /// Side by side.
+    Row,
+    /// One above the other.
+    Column,
+}
+
+/// One shell in a terminal tab.
+#[derive(Clone)]
+pub(crate) struct TerminalLeaf {
+    pub(crate) id: u64,
+    pub(crate) title: SharedString,
+    pub(crate) view: Entity<TerminalView>,
+}
+
+/// A tab's shells: one leaf, or a binary tree of splits.
+#[derive(Clone)]
+pub(crate) enum TerminalNode {
+    Leaf(TerminalLeaf),
+    Split {
+        dir: SplitDir,
+        first: Box<TerminalNode>,
+        second: Box<TerminalNode>,
+    },
+}
+
+impl TerminalNode {
+    fn leaf(&self, id: u64) -> Option<&TerminalLeaf> {
+        match self {
+            Self::Leaf(leaf) if leaf.id == id => Some(leaf),
+            Self::Leaf(_) => None,
+            Self::Split { first, second, .. } => first.leaf(id).or_else(|| second.leaf(id)),
+        }
+    }
+
+    fn first_leaf(&self) -> &TerminalLeaf {
+        match self {
+            Self::Leaf(leaf) => leaf,
+            Self::Split { first, .. } => first.first_leaf(),
+        }
+    }
+
+    /// Replaces the leaf `target` with a split of itself and `new`.
+    fn split_leaf(&mut self, target: u64, dir: SplitDir, new: TerminalLeaf) -> bool {
+        match self {
+            Self::Leaf(leaf) if leaf.id == target => {
+                let old = Self::Leaf(leaf.clone());
+                *self = Self::Split {
+                    dir,
+                    first: Box::new(old),
+                    second: Box::new(Self::Leaf(new)),
+                };
+                true
+            }
+            Self::Leaf(_) => false,
+            Self::Split { first, second, .. } => {
+                first.split_leaf(target, dir, new.clone()) || second.split_leaf(target, dir, new)
+            }
+        }
+    }
+
+    /// Takes this tree apart without `target`. Returns the surviving subtree (`None`
+    /// when this leaf was the target) and whether it was found.
+    fn into_without(self, target: u64) -> (Option<Self>, bool) {
+        match self {
+            Self::Leaf(leaf) => {
+                if leaf.id == target {
+                    (None, true)
+                } else {
+                    (Some(Self::Leaf(leaf)), false)
+                }
+            }
+            Self::Split { dir, first, second } => {
+                let (left, removed) = (*first).into_without(target);
+                if removed {
+                    return match left {
+                        Some(left) => (
+                            Some(Self::Split {
+                                dir,
+                                first: Box::new(left),
+                                second,
+                            }),
+                            true,
+                        ),
+                        None => (Some(*second), true),
+                    };
+                }
+                let (right, removed) = (*second).into_without(target);
+                if removed {
+                    return match right {
+                        Some(right) => (
+                            Some(Self::Split {
+                                dir,
+                                first: Box::new(left.expect("the side without the target")),
+                                second: Box::new(right),
+                            }),
+                            true,
+                        ),
+                        None => (Some(left.expect("the side without the target")), true),
+                    };
+                }
+                (
+                    Some(Self::Split {
+                        dir,
+                        first: Box::new(left.expect("a split has two sides")),
+                        second: Box::new(right.expect("a split has two sides")),
+                    }),
+                    false,
+                )
+            }
+        }
+    }
+}
+
+/// One terminal tab: a split tree of shells.
+pub(crate) struct TerminalTab {
+    pub(crate) title: SharedString,
+    pub(crate) root: Option<TerminalNode>,
+    /// The shell that has, or last had, the keyboard in this tab.
+    pub(crate) focused: u64,
+    /// A shell shown alone over the whole tab; its splits come back when it is unzoomed.
+    pub(crate) zoomed: Option<u64>,
+}
+
+impl TerminalTab {
+    fn focused_leaf(&self) -> Option<&TerminalLeaf> {
+        let root = self.root.as_ref()?;
+        Some(root.leaf(self.focused).unwrap_or_else(|| root.first_leaf()))
+    }
+}
+
+/// The shells open on one VM. Dropping the pane drops the views, which closes their ptys.
+pub(crate) struct TerminalPane {
+    pub(crate) vm: VmId,
+    pub(crate) tabs: Vec<TerminalTab>,
+    pub(crate) active: usize,
+    /// The pane fills the window, hiding the machine list and detail header.
+    pub(crate) maximized: bool,
+    /// The next tab's number and shell number, so they stay unique after closing one.
+    next_tab: usize,
+    next_shell: usize,
+    next_leaf: u64,
+}
+
+impl TerminalPane {
+    fn new(vm: VmId) -> Self {
+        Self {
+            vm,
+            tabs: Vec::new(),
+            active: 0,
+            maximized: false,
+            next_tab: 1,
+            next_shell: 1,
+            next_leaf: 1,
+        }
+    }
+
+    pub(crate) fn active_view(&self) -> Option<&Entity<TerminalView>> {
+        self.tabs
+            .get(self.active)?
+            .focused_leaf()
+            .map(|leaf| &leaf.view)
+    }
 }
 
 pub struct AppView {
@@ -101,6 +271,11 @@ pub struct AppView {
     confirm: Option<Confirm>,
     /// The header's "More" menu is open.
     menu_open: bool,
+    /// Whether the machine list is shown beside the selected VM.
+    show_machines: bool,
+    /// The selected VM's shells while the Terminal tab is open. Dropping a view closes
+    /// its pty.
+    terminal: Option<TerminalPane>,
     /// A host key the user is deciding on, for the selected VM.
     key_prompt: Option<KeyProblem>,
 }
@@ -129,6 +304,8 @@ impl AppView {
             add: None,
             confirm: None,
             menu_open: false,
+            show_machines: true,
+            terminal: None,
             key_prompt: None,
         }
     }
@@ -201,6 +378,10 @@ impl AppView {
                     self.inline = None;
                     self.confirm = None;
                     self.menu_open = false;
+                    self.terminal = None;
+                    if self.tab == Tab::Terminal {
+                        self.tab = Tab::Overview;
+                    }
                 }
             }
             Err(e) => self.message = Some((format!("loading inventory: {e:#}"), true)),
@@ -234,8 +415,320 @@ impl AppView {
         self.message = None;
         self.timeline = TimelineWindow::LATEST;
         self.scrolled_for = None;
+        // A shell belongs to its VM: switching machines closes it.
+        self.terminal = None;
+        if self.tab == Tab::Terminal {
+            self.tab = Tab::Overview;
+        }
         self.load_detail(id, cx);
         cx.notify();
+    }
+
+    /// Selects a tab, opening a shell the first time the Terminal tab is shown.
+    fn select_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.inline = None;
+        if tab == Tab::Terminal {
+            let Some(id) = self
+                .selected
+                .and_then(|id| self.vms.iter().find(|v| v.id == id))
+                .map(|vm| vm.id)
+            else {
+                return;
+            };
+            if self.terminal.as_ref().is_some_and(|pane| pane.vm != id) {
+                self.terminal = None;
+            }
+            if self.terminal.is_none() {
+                self.add_terminal_tab(window, cx);
+                return;
+            }
+            if let Some(view) = self.terminal.as_ref().and_then(TerminalPane::active_view) {
+                let focus = view.read(cx).focus_handle().clone();
+                window.focus(&focus, cx);
+            }
+        } else {
+            // Typing goes back to filtering the list.
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Adds a shell to the Terminal tab and focuses it, opening the pane if needed.
+    fn add_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .selected
+            .and_then(|id| self.vms.iter().find(|v| v.id == id))
+            .map(|vm| vm.id)
+        else {
+            return;
+        };
+        if self.terminal.as_ref().is_some_and(|pane| pane.vm != id) {
+            self.terminal = None;
+        }
+        let backend = self.backend.clone();
+        let view = cx.new(|cx| TerminalView::new(backend, id, cx));
+        let focus = view.read(cx).focus_handle().clone();
+        let pane = self.terminal.get_or_insert_with(|| TerminalPane::new(id));
+        let tab_title: SharedString = format!("Terminal {}", pane.next_tab).into();
+        pane.next_tab += 1;
+        let shell_title: SharedString = format!("Shell {}", pane.next_shell).into();
+        pane.next_shell += 1;
+        let leaf_id = pane.next_leaf;
+        pane.next_leaf += 1;
+        pane.tabs.push(TerminalTab {
+            title: tab_title,
+            root: Some(TerminalNode::Leaf(TerminalLeaf {
+                id: leaf_id,
+                title: shell_title,
+                view: view.clone(),
+            })),
+            focused: leaf_id,
+            zoomed: None,
+        });
+        pane.active = pane.tabs.len() - 1;
+        Self::close_when_exited(&view, leaf_id, window, cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Closes the shell's pane when its shell exits on its own (`exit`, Ctrl+D). A
+    /// dropped connection leaves the pane open with Reconnect.
+    fn close_when_exited(
+        view: &Entity<TerminalView>,
+        leaf: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(view, window, move |this, _, _: &ShellExited, window, cx| {
+            this.close_terminal_leaf(leaf, window, cx);
+        })
+        .detach();
+    }
+
+    fn select_terminal_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.terminal.as_mut() else {
+            return;
+        };
+        if index >= pane.tabs.len() {
+            return;
+        }
+        pane.active = index;
+        let view = pane.active_view().cloned();
+        if let Some(view) = view {
+            let focus = view.read(cx).focus_handle().clone();
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Closes a tab and all the shells in it. The last one closes the pane and goes
+    /// back to the Overview tab.
+    fn close_terminal_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let empty = {
+            let Some(pane) = self.terminal.as_mut() else {
+                return;
+            };
+            if index >= pane.tabs.len() {
+                return;
+            }
+            pane.tabs.remove(index);
+            if pane.tabs.is_empty() {
+                true
+            } else {
+                if pane.active >= pane.tabs.len() {
+                    pane.active = pane.tabs.len() - 1;
+                } else if index < pane.active {
+                    pane.active -= 1;
+                }
+                false
+            }
+        };
+        if empty {
+            self.terminal = None;
+            self.tab = Tab::Overview;
+            window.focus(&self.focus, cx);
+        } else if let Some(view) = self.terminal.as_ref().and_then(TerminalPane::active_view) {
+            let focus = view.read(cx).focus_handle().clone();
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// The shell that Ctrl+Shift+W, split and close act on.
+    fn focused_terminal_leaf(&self) -> Option<u64> {
+        let pane = self.terminal.as_ref()?;
+        let tab = pane.tabs.get(pane.active)?;
+        Some(tab.focused_leaf()?.id)
+    }
+
+    fn activate_terminal_leaf(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(pane) = self.terminal.as_mut() else {
+            return;
+        };
+        let active = pane.active;
+        let Some(tab) = pane.tabs.get_mut(active) else {
+            return;
+        };
+        if tab.focused != id {
+            tab.focused = id;
+            cx.notify();
+        }
+    }
+
+    /// Splits the shell `target` in two and focuses the new shell.
+    fn split_terminal_at(
+        &mut self,
+        target: u64,
+        dir: SplitDir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.terminal.as_ref() else {
+            return;
+        };
+        let Some(tab) = pane.tabs.get(pane.active) else {
+            return;
+        };
+        if tab
+            .root
+            .as_ref()
+            .is_none_or(|root| root.leaf(target).is_none())
+        {
+            return;
+        }
+        let vm = pane.vm;
+        let backend = self.backend.clone();
+        let view = cx.new(|cx| TerminalView::new(backend, vm, cx));
+        let focus = view.read(cx).focus_handle().clone();
+        let Some(pane) = self.terminal.as_mut() else {
+            return;
+        };
+        let shell_title: SharedString = format!("Shell {}", pane.next_shell).into();
+        pane.next_shell += 1;
+        let leaf_id = pane.next_leaf;
+        pane.next_leaf += 1;
+        let new = TerminalLeaf {
+            id: leaf_id,
+            title: shell_title,
+            view: view.clone(),
+        };
+        let active = pane.active;
+        let tab = &mut pane.tabs[active];
+        if tab
+            .root
+            .as_mut()
+            .is_some_and(|root| root.split_leaf(target, dir, new))
+        {
+            tab.focused = leaf_id;
+            tab.zoomed = None;
+        }
+        Self::close_when_exited(&view, leaf_id, window, cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Closes one shell. Closing the last shell of a tab closes the tab.
+    fn close_terminal_leaf(&mut self, target: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let empty = {
+            let Some(pane) = self.terminal.as_mut() else {
+                return;
+            };
+            let Some(index) = pane.tabs.iter().position(|tab| {
+                tab.root
+                    .as_ref()
+                    .is_some_and(|root| root.leaf(target).is_some())
+            }) else {
+                return;
+            };
+            let Some(root) = pane.tabs[index].root.take() else {
+                return;
+            };
+            if pane.tabs[index].zoomed == Some(target) {
+                pane.tabs[index].zoomed = None;
+            }
+            let (kept, _) = root.into_without(target);
+            if let Some(node) = kept {
+                let focused = node.first_leaf().id;
+                pane.tabs[index].root = Some(node);
+                if pane.tabs[index].focused == target {
+                    pane.tabs[index].focused = focused;
+                }
+            } else {
+                pane.tabs.remove(index);
+                if pane.active >= pane.tabs.len() && !pane.tabs.is_empty() {
+                    pane.active = pane.tabs.len() - 1;
+                } else if index < pane.active {
+                    pane.active -= 1;
+                }
+            }
+            pane.tabs.is_empty()
+        };
+        if empty {
+            self.terminal = None;
+            self.tab = Tab::Overview;
+            window.focus(&self.focus, cx);
+        } else if let Some(view) = self.terminal.as_ref().and_then(TerminalPane::active_view) {
+            let focus = view.read(cx).focus_handle().clone();
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows shell `leaf` alone over its tab, or brings the tab's splits back.
+    fn toggle_terminal_zoom(&mut self, leaf: u64, cx: &mut Context<Self>) {
+        let Some(tab) = self
+            .terminal
+            .as_mut()
+            .and_then(|pane| pane.tabs.get_mut(pane.active))
+        else {
+            return;
+        };
+        if tab
+            .root
+            .as_ref()
+            .is_some_and(|root| root.leaf(leaf).is_some())
+        {
+            tab.zoomed = if tab.zoomed == Some(leaf) {
+                None
+            } else {
+                Some(leaf)
+            };
+            tab.focused = leaf;
+            cx.notify();
+        }
+    }
+
+    fn toggle_terminal_max(&mut self, cx: &mut Context<Self>) {
+        let Some(pane) = self.terminal.as_mut() else {
+            return;
+        };
+        pane.maximized = !pane.maximized;
+        cx.notify();
+    }
+
+    fn toggle_machines(&mut self, cx: &mut Context<Self>) {
+        self.show_machines = !self.show_machines;
+        cx.notify();
+    }
+
+    /// The panel button that shows and hides the machine list.
+    fn machines_button(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id(id)
+            .debug_selector(move || id.to_owned())
+            .size(px(28.))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .rounded(radius::M)
+            .cursor_pointer()
+            .when(!self.show_machines, |d| d.bg(rgb(color::HOVER)))
+            .hover(|d| d.bg(rgb(color::HOVER)))
+            .child(icon(Icon::Sidebar, px(15.), color::TEXT_SECONDARY))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_machines(cx)))
+            .into_any_element()
     }
 
     fn load_detail(&mut self, id: VmId, cx: &mut Context<Self>) {
@@ -352,6 +845,51 @@ impl AppView {
             }
             cx.notify();
             return;
+        }
+        if ks.modifiers.control && ks.modifiers.shift && !ks.modifiers.alt && ks.key == "b" {
+            self.toggle_machines(cx);
+            return;
+        }
+        if self.tab == Tab::Terminal
+            && ks.modifiers.control
+            && ks.modifiers.shift
+            && !ks.modifiers.alt
+        {
+            match ks.key.as_str() {
+                "t" => {
+                    self.add_terminal_tab(window, cx);
+                    return;
+                }
+                "w" => {
+                    if let Some(leaf) = self.focused_terminal_leaf() {
+                        self.close_terminal_leaf(leaf, window, cx);
+                    }
+                    return;
+                }
+                "d" => {
+                    if let Some(leaf) = self.focused_terminal_leaf() {
+                        self.split_terminal_at(leaf, SplitDir::Row, window, cx);
+                    }
+                    return;
+                }
+                "e" => {
+                    if let Some(leaf) = self.focused_terminal_leaf() {
+                        self.split_terminal_at(leaf, SplitDir::Column, window, cx);
+                    }
+                    return;
+                }
+                "m" => {
+                    self.toggle_terminal_max(cx);
+                    return;
+                }
+                "z" => {
+                    if let Some(leaf) = self.focused_terminal_leaf() {
+                        self.toggle_terminal_zoom(leaf, cx);
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
         if ks.modifiers.control && ks.key == "k" {
             self.open_search(window, cx);
@@ -1072,7 +1610,8 @@ impl AppView {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_add_form(window, cx);
                                     })),
-                            ),
+                            )
+                            .child(self.machines_button("toggle-machines-sidebar", cx)),
                     )
                     .child(self.filter_input(cx)),
             )
@@ -1322,9 +1861,10 @@ impl AppView {
         let header = self.render_header(vm, cx);
         let banner = match self.tab {
             Tab::Timeline => crate::timeline_view::banner(&self.timeline, cx),
-            Tab::Overview | Tab::Sessions => None,
+            Tab::Overview | Tab::Sessions | Tab::Terminal => None,
         };
         let (body, pinned_day) = self.tab_body(cx);
+        let terminal = self.tab == Tab::Terminal;
 
         div()
             .flex_1()
@@ -1342,7 +1882,15 @@ impl AppView {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .child(
+                    .child(if terminal {
+                        // The grid fills the pane; its own canvas handles scrolling.
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .child(div().flex_1().min_w_0().min_h_0().children(body))
+                            .into_any_element()
+                    } else {
                         div()
                             .id("detail-body")
                             .debug_selector(|| "detail-body".to_owned())
@@ -1352,11 +1900,324 @@ impl AppView {
                             .px(space::XL)
                             .pt(space::L)
                             .pb(space::XL)
-                            .children(body),
-                    )
+                            .children(body)
+                            .into_any_element()
+                    })
                     .children(pinned_day.map(|d| crate::timeline_view::pinned(&d))),
             )
             .into_any_element()
+    }
+
+    /// The Terminal tab: a strip of shells over the active grid.
+    fn render_terminal(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(pane) = &self.terminal else {
+            return div().child(label("Select a machine")).into_any_element();
+        };
+        let mut body = div().flex_1().min_h_0().flex().p(px(6.));
+        if let Some(tab) = pane.tabs.get(pane.active)
+            && let Some(root) = &tab.root
+        {
+            let focused = tab.focused_leaf().map_or(tab.focused, |leaf| leaf.id);
+            let zoomed = tab.zoomed.and_then(|id| root.leaf(id));
+            body = body.child(match zoomed {
+                Some(leaf) => Self::render_terminal_leaf(leaf, focused, true, cx),
+                None => Self::render_terminal_node(root, focused, cx),
+            });
+        }
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .child(Self::terminal_strip(pane, cx))
+            .child(body)
+            .into_any_element()
+    }
+
+    /// One shell card, or two laid out by the split that joins them.
+    fn render_terminal_node(
+        node: &TerminalNode,
+        focused: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match node {
+            TerminalNode::Leaf(leaf) => Self::render_terminal_leaf(leaf, focused, false, cx),
+            TerminalNode::Split { dir, first, second } => {
+                let container = div().flex_1().min_w_0().min_h_0().flex().gap(px(6.));
+                let container = if *dir == SplitDir::Row {
+                    container.flex_row()
+                } else {
+                    container.flex_col()
+                };
+                container
+                    .child(Self::render_terminal_node(first, focused, cx))
+                    .child(Self::render_terminal_node(second, focused, cx))
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// One shell's card: its header and the terminal.
+    fn render_terminal_leaf(
+        leaf: &TerminalLeaf,
+        focused: u64,
+        zoomed: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = leaf.id;
+        let active = id == focused;
+        let header = Self::terminal_leaf_header(leaf, active, zoomed, cx);
+        div()
+            .id(SharedString::from(format!("terminal-leaf-{id}")))
+            .group(SharedString::from(format!("terminal-leaf-{id}")))
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .rounded(radius::L)
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(if active {
+                color::BORDER_STRONG
+            } else {
+                color::BORDER
+            }))
+            .bg(rgb(color::ELEVATED))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.activate_terminal_leaf(id, cx);
+                }),
+            )
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(div().flex_1().min_w_0().min_h_0().child(leaf.view.clone())),
+            )
+            .into_any_element()
+    }
+
+    /// The title and the split, zoom and close controls at the top of a shell card. The
+    /// focused card always shows its controls; the others show them while hovered.
+    fn terminal_leaf_header(
+        leaf: &TerminalLeaf,
+        active: bool,
+        zoomed: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let id = leaf.id;
+        let split = |glyph: Icon, dir: SplitDir, selector: &'static str, name: &'static str| {
+            Self::terminal_leaf_button(
+                format!("terminal-split-{name}-{id}"),
+                glyph,
+                active.then_some(selector),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.split_terminal_at(id, dir, window, cx);
+            }))
+        };
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .when(!active, |d| {
+                d.opacity(0.)
+                    .group_hover(format!("terminal-leaf-{id}"), |s| s.opacity(1.))
+            })
+            .child(split(
+                Icon::SplitRow,
+                SplitDir::Row,
+                "terminal-split-row",
+                "row",
+            ))
+            .child(split(
+                Icon::SplitColumn,
+                SplitDir::Column,
+                "terminal-split-column",
+                "column",
+            ))
+            .child(
+                Self::terminal_leaf_button(
+                    format!("terminal-zoom-{id}"),
+                    if zoomed { Icon::Collapse } else { Icon::Expand },
+                    active.then_some("terminal-zoom"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_terminal_zoom(id, cx);
+                })),
+            )
+            .child(
+                Self::terminal_leaf_button(
+                    format!("terminal-close-leaf-{id}"),
+                    Icon::Close,
+                    active.then_some("terminal-close-leaf"),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_terminal_leaf(id, window, cx);
+                })),
+            );
+        div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(30.))
+            .pl(px(10.))
+            .pr(px(6.))
+            .text_size(text::META)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(rgb(if active {
+                color::TEXT
+            } else {
+                color::TEXT_SECONDARY
+            }))
+            .child(icon(
+                Icon::Terminal,
+                px(13.),
+                if active {
+                    color::ACCENT
+                } else {
+                    color::TEXT_MUTED
+                },
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(leaf.title.clone()),
+            )
+            .when(zoomed, |d| {
+                d.child(
+                    div()
+                        .text_size(text::SMALL)
+                        .text_color(rgb(color::TEXT_MUTED))
+                        .child("zoomed"),
+                )
+            })
+            .child(controls)
+    }
+
+    /// A small icon button in a shell's card header.
+    fn terminal_leaf_button(
+        id: String,
+        glyph: Icon,
+        debug: Option<&'static str>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut button = div()
+            .id(SharedString::from(id))
+            .size(px(22.))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.))
+            .cursor_pointer()
+            .hover(|d| d.bg(rgb(color::HOVER)))
+            .child(icon(glyph, px(13.), color::TEXT_MUTED));
+        if let Some(selector) = debug {
+            button = button.debug_selector(move || selector.to_owned());
+        }
+        button
+    }
+
+    /// The shells' tabs, the new-shell button and the maximize toggle.
+    fn terminal_strip(pane: &TerminalPane, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .h(px(36.))
+            .px(space::M)
+            .bg(rgb(color::SURFACE))
+            .border_b_1()
+            .border_color(rgb(color::BORDER))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap(px(4.))
+                    .overflow_hidden()
+                    .children(pane.tabs.iter().enumerate().map(|(index, tab)| {
+                        let active = index == pane.active;
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .h(px(26.))
+                            .pl(px(8.))
+                            .pr(px(2.))
+                            .rounded(radius::M)
+                            .bg(if active {
+                                rgb(color::ELEVATED)
+                            } else {
+                                rgb(color::SURFACE)
+                            })
+                            .text_color(if active {
+                                rgb(color::TEXT)
+                            } else {
+                                rgb(color::TEXT_SECONDARY)
+                            })
+                            .when(!active, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("terminal-tab-{index}")))
+                                    .debug_selector(|| format!("terminal-tab-{index}"))
+                                    .h_full()
+                                    .pr(px(6.))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(text::META)
+                                    .cursor_pointer()
+                                    .child(tab.title.clone())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.select_terminal_tab(index, window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("terminal-close-{index}")))
+                                    .debug_selector(|| format!("terminal-close-{index}"))
+                                    .size(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(rgb(color::BORDER_STRONG)))
+                                    .child(icon(Icon::Close, px(11.), color::TEXT_MUTED))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.close_terminal_tab(index, window, cx);
+                                    })),
+                            )
+                    })),
+            )
+            .child(
+                icon_button("terminal-new", Icon::Plus, false)
+                    .on_click(cx.listener(|this, _, window, cx| this.add_terminal_tab(window, cx))),
+            )
+            .child(
+                icon_button(
+                    "terminal-max",
+                    if pane.maximized {
+                        Icon::Collapse
+                    } else {
+                        Icon::Expand
+                    },
+                    pane.maximized,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_terminal_max(cx))),
+            )
     }
 
     /// The selected VM's open tab, as the detail body's children: one element, or for
@@ -1393,6 +2254,7 @@ impl AppView {
                 )
                 .into_any_element()
             }
+            (Some(_), Tab::Terminal) => self.render_terminal(cx),
             (Some(d), Tab::Timeline) => {
                 let items = crate::timeline_view::items(&d.timeline, Local::now());
                 let pinned =
@@ -1529,6 +2391,19 @@ impl AppView {
                                         this.open_edit_form(id, window, cx);
                                     }),
                                 ))
+                                .child(
+                                    menu_action(
+                                        "external-terminal",
+                                        "Open in external terminal",
+                                        false,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.menu_open = false;
+                                            this.open_terminal(id, cx);
+                                        },
+                                    )),
+                                )
                                 .child(menu_action("remove", "Remove VM…", true).on_click(
                                     cx.listener(move |this, _, _, cx| {
                                         this.menu_open = false;
@@ -1599,7 +2474,9 @@ impl AppView {
                 button(Button::Primary, "terminal")
                     .child(icon(Icon::Terminal, px(14.), color::ON_ACCENT))
                     .child("Open terminal")
-                    .on_click(cx.listener(move |this, _, _, cx| this.open_terminal(id, cx))),
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_tab(Tab::Terminal, window, cx);
+                    })),
             )
             .child(self.more_menu(vm, cx))
     }
@@ -1676,10 +2553,16 @@ impl AppView {
             .child(
                 div()
                     .flex()
-                    .gap(space::XL)
+                    .items_center()
+                    .gap(px(4.))
                     .child(self.tab_button("tab-overview", "Overview", Tab::Overview, cx))
                     .child(self.tab_button("tab-sessions", "Sessions", Tab::Sessions, cx))
-                    .child(self.tab_button("tab-timeline", "Timeline", Tab::Timeline, cx)),
+                    .child(self.tab_button("tab-timeline", "Timeline", Tab::Timeline, cx))
+                    // The Terminal tab exists only while a shell does; Open terminal
+                    // creates it.
+                    .when(self.terminal.is_some(), |d| {
+                        d.child(self.tab_button("tab-terminal", "Terminal", Tab::Terminal, cx))
+                    }),
             )
     }
 
@@ -1694,15 +2577,11 @@ impl AppView {
         div()
             .id(id)
             .debug_selector(|| id.to_owned())
-            .h(px(36.))
+            .h(px(30.))
+            .px(px(12.))
             .flex()
             .items_center()
-            .border_b_2()
-            .border_color(if active {
-                rgb(color::ACCENT).into()
-            } else {
-                transparent_black()
-            })
+            .rounded(radius::M)
             .cursor_pointer()
             .text_size(text::BODY)
             .font_weight(FontWeight::MEDIUM)
@@ -1711,11 +2590,12 @@ impl AppView {
             } else {
                 color::TEXT_SECONDARY
             }))
-            .hover(|s| s.text_color(rgb(color::TEXT)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.tab = tab;
-                this.inline = None;
-                cx.notify();
+            .when(active, |d| d.bg(rgb(color::ELEVATED)))
+            .when(!active, |d| {
+                d.hover(|s| s.bg(rgb(color::HOVER)).text_color(rgb(color::TEXT)))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_tab(tab, window, cx);
             }))
             .child(content)
     }
@@ -1731,6 +2611,24 @@ impl Render for AppView {
             Some(vm) => format!("VMDesk — {}", vm.name),
             None => "VMDesk".to_owned(),
         };
+        let maximized =
+            self.tab == Tab::Terminal && self.terminal.as_ref().is_some_and(|pane| pane.maximized);
+        let workspace = if maximized {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(self.render_terminal(cx))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .when(self.show_machines, |d| d.child(self.render_list(cx)))
+                .child(self.render_detail(cx))
+                .into_any_element()
+        };
         let body = div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
@@ -1742,15 +2640,12 @@ impl Render for AppView {
             .text_color(rgb(color::TEXT))
             .font_family(SANS)
             .text_size(text::BODY)
-            .children(crate::chrome::title_bar(window, title))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(self.render_list(cx))
-                    .child(self.render_detail(cx)),
-            )
+            .children(crate::chrome::title_bar(
+                window,
+                title,
+                Some(self.machines_button("toggle-machines-title", cx)),
+            ))
+            .child(workspace)
             .when(self.menu_open, |d| {
                 d.child(backdrop(
                     "menu-backdrop",

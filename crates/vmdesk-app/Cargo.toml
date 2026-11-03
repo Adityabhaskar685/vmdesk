@@ -15,11 +15,13 @@ vmdesk-db.workspace = true
 vmdesk-transport.workspace = true
 vmdesk-reach.workspace = true
 vmdesk-collect = { workspace = true, features = ["remote"] }
+vmdesk-terminal.workspace = true
 gpui.workspace = true
 gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "fs", "process"] }
 anyhow.workspace = true
 chrono.workspace = true
+async-channel.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 tracing.workspace = true

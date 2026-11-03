@@ -11,7 +11,7 @@ use crate::theme::{color, text};
 
 /// Width of the strip along each window edge that resizes the window.
 const EDGE: Pixels = px(6.);
-const TITLE_HEIGHT: Pixels = px(34.);
+const TITLE_HEIGHT: Pixels = px(40.);
 
 /// Which edge or corner `pos` is on, if any.
 fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
@@ -104,8 +104,13 @@ fn control(id: &'static str, glyph: &'static str, close: bool) -> gpui::Stateful
         .child(glyph)
 }
 
-/// The title bar, or nothing when the compositor draws one.
-pub fn title_bar(window: &Window, title: String) -> Option<AnyElement> {
+/// The title bar, or nothing when the compositor draws one. `leading` sits before the
+/// title, for buttons such as the sidebar toggle.
+pub fn title_bar(
+    window: &Window,
+    title: String,
+    leading: Option<AnyElement>,
+) -> Option<AnyElement> {
     if !client_decorated(window) {
         return None;
     }
@@ -120,6 +125,8 @@ pub fn title_bar(window: &Window, title: String) -> Option<AnyElement> {
             .bg(rgb(color::SURFACE))
             .border_b_1()
             .border_color(rgb(color::BORDER))
+            .px(px(8.))
+            .children(leading)
             .child(
                 div()
                     .id("title-drag")

@@ -1046,3 +1046,309 @@ fn a_rename_the_database_refuses_keeps_its_text(cx: &mut TestAppContext) {
     assert_eq!(kept, Some(201), "the field is back with what was typed");
     assert_eq!(sessions_of(&env, vm)[0].title, None);
 }
+
+#[gpui::test]
+fn the_open_terminal_button_shows_the_embedded_terminal(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    assert!(
+        !shown(cx, "tab-terminal"),
+        "the Terminal tab is hidden until a shell is opened"
+    );
+
+    click(cx, "terminal");
+    wait(cx, &view, "the embedded terminal", |v| {
+        v.tab == Tab::Terminal && v.terminal.is_some()
+    });
+    assert!(shown(cx, "tab-terminal"));
+}
+
+#[gpui::test]
+fn the_terminal_tab_opens_a_shell_once_and_keeps_it(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the terminal tab", |v| {
+        v.tab == Tab::Terminal && v.terminal.is_some()
+    });
+    let first = view.read_with(cx, |v, _| {
+        v.terminal
+            .as_ref()
+            .and_then(TerminalPane::active_view)
+            .map(Entity::entity_id)
+    });
+    assert!(shown(cx, "tab-terminal"));
+
+    click(cx, "tab-overview");
+    settle(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.tab), Tab::Overview);
+    assert!(
+        view.read_with(cx, |v, _| v.terminal.is_some()),
+        "the shell stays open while another tab is shown"
+    );
+
+    click(cx, "tab-terminal");
+    wait(cx, &view, "the terminal again", |v| {
+        v.tab == Tab::Terminal && v.terminal.is_some()
+    });
+    assert_eq!(
+        view.read_with(cx, |v, _| {
+            v.terminal
+                .as_ref()
+                .and_then(TerminalPane::active_view)
+                .map(Entity::entity_id)
+        }),
+        first,
+        "returning to the tab reuses the shell"
+    );
+}
+
+#[gpui::test]
+fn terminal_tabs_open_close_and_close_the_pane(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the first shell", |v| {
+        v.tab == Tab::Terminal && v.terminal.as_ref().is_some_and(|p| p.tabs.len() == 1)
+    });
+    let first = view.read_with(cx, |v, _| {
+        v.terminal
+            .as_ref()
+            .and_then(TerminalPane::active_view)
+            .map(Entity::entity_id)
+    });
+
+    click(cx, "terminal-new");
+    wait(cx, &view, "the second shell", |v| {
+        v.terminal.as_ref().is_some_and(|p| p.tabs.len() == 2)
+    });
+    let second = view.read_with(cx, |v, _| {
+        v.terminal
+            .as_ref()
+            .and_then(TerminalPane::active_view)
+            .map(Entity::entity_id)
+    });
+    assert_ne!(first, second, "the new shell is a separate pty");
+    assert!(shown(cx, "terminal-tab-1"));
+
+    click(cx, "terminal-close-1");
+    wait(cx, &view, "the second shell to close", |v| {
+        v.terminal.as_ref().is_some_and(|p| p.tabs.len() == 1)
+    });
+    assert_eq!(
+        view.read_with(cx, |v, _| {
+            v.terminal
+                .as_ref()
+                .and_then(TerminalPane::active_view)
+                .map(Entity::entity_id)
+        }),
+        first,
+        "closing the active shell focuses the one beside it"
+    );
+
+    click(cx, "terminal-close-0");
+    wait(cx, &view, "the pane to close", |v| {
+        v.terminal.is_none() && v.tab == Tab::Overview
+    });
+    assert!(shown(cx, "tab-overview"));
+    assert!(
+        !shown(cx, "tab-terminal"),
+        "closing the last shell removes the Terminal tab"
+    );
+}
+
+#[gpui::test]
+fn the_terminal_maximizes_and_restores(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the shell", |v| v.terminal.is_some());
+    assert!(shown(cx, "tab-overview"), "the header is shown normally");
+
+    click(cx, "terminal-max");
+    wait(cx, &view, "the maximized pane", |v| {
+        v.terminal.as_ref().is_some_and(|p| p.maximized)
+    });
+    assert!(
+        !shown(cx, "tab-overview"),
+        "the header and machine list are hidden while maximized"
+    );
+
+    click(cx, "terminal-max");
+    wait(cx, &view, "the restored pane", |v| {
+        v.terminal.as_ref().is_some_and(|p| !p.maximized)
+    });
+    assert!(shown(cx, "tab-overview"));
+}
+
+fn leaf_ids(node: &TerminalNode) -> Vec<u64> {
+    match node {
+        TerminalNode::Leaf(leaf) => vec![leaf.id],
+        TerminalNode::Split { first, second, .. } => {
+            let mut ids = leaf_ids(first);
+            ids.extend(leaf_ids(second));
+            ids
+        }
+    }
+}
+
+fn active_leaf_ids(view: &AppView) -> Vec<u64> {
+    let Some(pane) = view.terminal.as_ref() else {
+        return Vec::new();
+    };
+    let Some(tab) = pane.tabs.get(pane.active) else {
+        return Vec::new();
+    };
+    tab.root.as_ref().map_or_else(Vec::new, leaf_ids)
+}
+
+#[gpui::test]
+fn the_terminal_splits_rows_and_columns_and_closes_leaves(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the first shell", |v| {
+        active_leaf_ids(v).len() == 1
+    });
+    let first = view.read_with(cx, |v, _| active_leaf_ids(v));
+    assert_eq!(first.len(), 1);
+
+    click(cx, "terminal-split-row");
+    wait(cx, &view, "the row split", |v| {
+        active_leaf_ids(v).len() == 2
+    });
+    let two = view.read_with(cx, |v, _| active_leaf_ids(v));
+    assert_ne!(two[0], two[1], "the new pane is a separate shell");
+    assert!(
+        shown(cx, "terminal-split-column"),
+        "the new, focused pane has its own controls"
+    );
+
+    click(cx, "terminal-split-column");
+    wait(cx, &view, "the column split", |v| {
+        active_leaf_ids(v).len() == 3
+    });
+
+    click(cx, "terminal-close-leaf");
+    wait(cx, &view, "one shell to close", |v| {
+        active_leaf_ids(v).len() == 2
+    });
+
+    click(cx, "terminal-close-leaf");
+    wait(cx, &view, "the split to collapse", |v| {
+        active_leaf_ids(v).len() == 1
+    });
+
+    click(cx, "terminal-close-leaf");
+    wait(cx, &view, "the pane to close", |v| {
+        v.terminal.is_none() && v.tab == Tab::Overview
+    });
+    assert!(!shown(cx, "tab-terminal"));
+}
+
+/// The view of shell `leaf` in the active terminal tab.
+fn shell_view(view: &AppView, leaf: u64) -> Entity<TerminalView> {
+    let pane = view.terminal.as_ref().expect("a terminal pane");
+    let root = pane.tabs[pane.active].root.as_ref().expect("a shell");
+    root.leaf(leaf).expect("that shell").view.clone()
+}
+
+#[gpui::test]
+fn a_shell_that_exits_closes_its_pane(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the first shell", |v| {
+        active_leaf_ids(v).len() == 1
+    });
+    click(cx, "terminal-split-row");
+    wait(cx, &view, "the row split", |v| {
+        active_leaf_ids(v).len() == 2
+    });
+    let [first, second] = view.read_with(cx, |v, _| active_leaf_ids(v))[..] else {
+        panic!("two shells");
+    };
+
+    let exiting = view.read_with(cx, |v, _| shell_view(v, second));
+    exiting.update(cx, |_, cx| cx.emit(ShellExited));
+    wait(cx, &view, "the exited shell to close", |v| {
+        active_leaf_ids(v) == [first]
+    });
+
+    let last = view.read_with(cx, |v, _| shell_view(v, first));
+    last.update(cx, |_, cx| cx.emit(ShellExited));
+    wait(cx, &view, "the last shell to close the pane", |v| {
+        v.terminal.is_none() && v.tab == Tab::Overview
+    });
+    assert!(!shown(cx, "tab-terminal"));
+}
+
+fn zoomed(view: &AppView) -> Option<u64> {
+    let pane = view.terminal.as_ref()?;
+    pane.tabs.get(pane.active)?.zoomed
+}
+
+#[gpui::test]
+fn a_shell_zooms_over_its_tab_and_back(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the first shell", |v| {
+        active_leaf_ids(v).len() == 1
+    });
+    click(cx, "terminal-split-row");
+    wait(cx, &view, "the row split", |v| {
+        active_leaf_ids(v).len() == 2
+    });
+    let focused = view.read_with(cx, |v, _| active_leaf_ids(v)[1]);
+
+    click(cx, "terminal-zoom");
+    wait(cx, &view, "the focused shell to zoom", |v| {
+        zoomed(v) == Some(focused)
+    });
+    assert_eq!(
+        view.read_with(cx, |v, _| active_leaf_ids(v).len()),
+        2,
+        "zooming hides the other shell without closing it"
+    );
+
+    cx.simulate_keystrokes("ctrl-shift-z");
+    wait(cx, &view, "the split to come back", |v| zoomed(v).is_none());
+
+    click(cx, "terminal-zoom");
+    wait(cx, &view, "zoomed again", |v| zoomed(v).is_some());
+    click(cx, "terminal-split-column");
+    wait(cx, &view, "a split to unzoom", |v| {
+        zoomed(v).is_none() && active_leaf_ids(v).len() == 3
+    });
+}
+
+#[gpui::test]
+fn the_machine_list_hides_and_shows(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+    assert!(shown(cx, "add-vm"), "the machine list starts open");
+
+    click(cx, "toggle-machines-sidebar");
+    wait(cx, &view, "the list to hide", |v| !v.show_machines);
+    assert!(!shown(cx, "add-vm"), "the machine list is gone");
+
+    cx.simulate_keystrokes("ctrl-shift-b");
+    wait(cx, &view, "the list to come back", |v| v.show_machines);
+    assert!(shown(cx, "add-vm"), "the shortcut brings it back");
+}

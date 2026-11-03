@@ -28,6 +28,8 @@ struct TestServer {
     forwards: Arc<AtomicUsize>,
     /// Channels running `cat`: stdin is echoed until the client's EOF.
     cats: HashSet<ChannelId>,
+    /// Channels running an interactive shell: stdin is echoed back too.
+    shells: HashSet<ChannelId>,
 }
 
 #[allow(clippy::unused_async_trait_impl)] // russh's handler methods are async; a fake answers at once
@@ -90,13 +92,53 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        term: &str,
+        _cols: u32,
+        _rows: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(russh::Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        assert_eq!(term, "xterm-256color");
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel)?;
+        self.shells.insert(channel);
+        session.data(channel, b"ready\r\n".to_vec())?;
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        channel: ChannelId,
+        _cols: u32,
+        _rows: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
     async fn data(
         &mut self,
         channel: ChannelId,
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.cats.contains(&channel) {
+        if self.cats.contains(&channel) || self.shells.contains(&channel) {
             session.data(channel, data.to_vec())?;
         }
         Ok(())
@@ -107,7 +149,7 @@ impl server::Handler for TestServer {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.cats.remove(&channel) {
+        if self.cats.remove(&channel) || self.shells.remove(&channel) {
             session.eof(channel)?;
             session.exit_status_request(channel, 0)?;
             session.close(channel)?;
@@ -154,6 +196,7 @@ async fn start(name: &'static str, allowed: PublicKey) -> (u16, PublicKey, Arc<A
         allowed,
         forwards: Arc::clone(&forwards),
         cats: HashSet::new(),
+        shells: HashSet::new(),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -450,6 +493,38 @@ async fn exec_io_echoes_stdin_until_eof() {
     assert!(echoed == payload, "stdout is exactly stdin, without stderr");
 
     assert_eq!(session.exec("uname -a").await.unwrap().status, Some(0));
+    t.close_all().await;
+    std::fs::remove_file(key).ok();
+}
+
+#[tokio::test]
+async fn shell_opens_a_pty_and_echoes_input() {
+    let (client_pub, key) = client_key();
+    let (port, _, _) = start("target", client_pub).await;
+    let target = vm("target", port, &key, vec![]);
+    let store = Arc::new(MemStore::default());
+    let t = transport(&store, true);
+    let session = t.session(&target, &inventory(&[&target])).await.unwrap();
+
+    let (mut reader, writer) = session.open_shell(80, 24).await.unwrap().split();
+    let mut buf = [0u8; 64];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(2), reader.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..n], b"ready\r\n");
+
+    // Bytes go back out as the pty's input, unchanged.
+    writer.write(b"hello\r").await.unwrap();
+    let n = tokio::time::timeout(std::time::Duration::from_secs(2), reader.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..n], b"hello\r");
+
+    // A resize is a request with a reply, so this would hang if the server ignored it.
+    writer.resize(100, 30, 0, 0).await.unwrap();
+    writer.close().await;
     t.close_all().await;
     std::fs::remove_file(key).ok();
 }

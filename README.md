@@ -20,7 +20,7 @@ Screenshots use a database of fictional VMs (see [Make demo data](#make-demo-dat
 | M5 | Desktop app | Done |
 | M6 | On-VM agent: history while the laptop is away | Done |
 | M7 | Work sessions, current work, notes, event search | Done |
-| M8 | Embedded terminal (libghostty) | Next |
+| M8 | Embedded terminal (libghostty) | Done |
 | M9 | First cloud provider | Planned |
 
 ## Install
@@ -30,8 +30,27 @@ should work for the CLI but is untested. On Debian or Ubuntu, the app also needs
 
 ```sh
 sudo apt install libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev \
-  clang cmake fonts-noto-core fonts-noto-mono
+  clang cmake pkg-config fonts-noto-core fonts-noto-mono
 ```
+
+The embedded terminal links **libghostty-vt**, Ghostty's terminal library. Build it from
+Ghostty's source with Zig, once:
+
+```sh
+git clone https://github.com/ghostty-org/ghostty && cd ghostty
+zig build -Demit-lib-vt -Doptimize=ReleaseFast --prefix ~/.local
+```
+
+`crates/vmdesk-terminal/build.rs` finds it with pkg-config, looking in
+`~/.local/share/pkgconfig` as well (set `PKG_CONFIG_PATH` for another prefix), and links it
+statically, so the app does not need it at run time. The libghostty version is pinned: rebuild
+it when updating VMDesk.
+
+Shell prompts often use Powerline or Nerd Font glyphs from the *remote* machine's theme. Fonts
+are local to the client, so install one on the machine running VMDesk (for example
+`fonts-hack-ttf` plus `Hack Nerd Font`); the terminal picks it up automatically, or set
+`VMDESK_TERM_FONT` to another family. Missing glyphs fall back to other fixed-width fonts
+rather than a proportional one, which would break the grid.
 
 Build the app and the CLI together, because the app runs `vmdesk proxy` and `vmdesk askpass` from
 its own directory:
@@ -60,11 +79,12 @@ target/release/vmdesk-app build-01   # open with a VM selected (name, alias or i
 
 The list on the left shows every VM with a status dot (green online, amber SSH failing, red no
 route, grey not checked), the interface that reaches it, and what you were doing there. Type to
-filter the list, use ↑/↓ to move, and press Esc to clear the filter.
+filter the list, use ↑/↓ to move, and press Esc to clear the filter. Ctrl+Shift+B, or the
+sidebar button, hides the list and gives the selected VM the whole window.
 
 The selected VM has a status pill (`Online + agent`, `SSH failing`, and so on), the agent's state
 (with why its last sync failed, when it did; `vmdesk status` and `vmdesk agent status` say it
-too), and three tabs:
+too), and four tabs:
 
 - **Overview** starts with **Current work**: the command or tmux session you were using, its repo
   and branch with uncommitted changes, and since when. Your newest note on the session sits above
@@ -75,6 +95,22 @@ too), and three tabs:
 - **Timeline** tells each event as a sentence under a day header, with its source (`agent`,
   `ssh` or `laptop`). The day of the events at the top stays pinned as you scroll. It holds
   the newest 300 events; **Show older events** at its foot loads more.
+- **Terminal** opens an embedded shell on the VM over the same SSH path. Vim, top and tmux work,
+  and resizing the window resizes the remote pty. The wheel scrolls the scrollback (or goes to a
+  full-screen program that reads the mouse), Shift+PageUp/PageDown page through it, and typing
+  returns to the bottom. Selecting text copies it to the primary selection; Ctrl+Shift+C and
+  Ctrl+Shift+V use the clipboard, and a middle click pastes the primary selection. A multi-line
+  paste asks first unless the program turned on bracketed paste.
+  The strip above the grid holds one tab per shell: **+** (or Ctrl+Shift+T) opens another, the
+  **×** beside a tab (or Ctrl+Shift+W) closes it, and closing the last one leaves the Terminal
+  tab. Ctrl+Shift+M, or the corner button on the strip, makes the terminal fill the window and
+  hides the machine list and header until you restore it. Shells keep running while you look at
+  another tab, and close when you switch machines.
+  Each shell is a card that can be split: Ctrl+Shift+D (or the card's split button) opens a
+  shell to its right, Ctrl+Shift+E one below it. The focused card shows its buttons; the others
+  show them on hover. Ctrl+Shift+Z, or the card's zoom button, shows one shell alone over the tab
+  and brings the splits back on the second press. `exit` or Ctrl+D closes the shell's card, and
+  the last card closes the tab. A dropped connection keeps the card, with **Reconnect**.
 
 ![The Sessions tab: an ongoing titled session with its repos, commands and a note, and an older untitled session](docs/screenshots/sessions.png)
 
@@ -92,8 +128,10 @@ The header's buttons:
 
 - **Check** re-runs the route and SSH check. **Refresh** collects a new snapshot. The open VM is
   also collected every 2 minutes while it is reachable.
-- **Open terminal** starts your terminal with `ssh` over the same path VMDesk uses. The terminal
-  is `$VMDESK_TERMINAL` if set (a command that takes the program to run, such as `ghostty -e`),
+- **Open terminal** shows the embedded **Terminal** tab and starts a shell there. **Open in external
+  terminal** in the **⋯** menu starts a separate terminal window with `ssh` over the same path
+  VMDesk uses, instead. The external terminal is `$VMDESK_TERMINAL` if set (a command that takes
+  the program to run, such as `ghostty -e`),
   else the first installed of Ghostty, `x-terminal-emulator`, Ptyxis, GNOME Terminal, kitty and
   xterm. For a VM with a stored password, `vmdesk askpass` answers the first password prompt
   from the keychain.
@@ -225,7 +263,10 @@ branches, commit subjects, containers, tmux sessions and listening processes.
 | Variable | Effect |
 | --- | --- |
 | `VMDESK_DATA_DIR` | Data directory (also `--data-dir` on the CLI) |
-| `VMDESK_TERMINAL` | Terminal command for **Open terminal**, such as `ghostty -e` |
+| `VMDESK_TERMINAL` | External terminal command for **Open in external terminal**, such as `ghostty -e` |
+| `VMDESK_TERM_FONT` | Font family for the embedded terminal (default: the first installed of Hack/JetBrainsMono/FiraCode/CaskaydiaCove/SauceCodePro Nerd Font Mono, else Noto Sans Mono) |
+| `VMDESK_TERM_FONT_SIZE` | Font size in pixels for the embedded terminal (default: 14) |
+| `VMDESK_SCROLL_LINES` | Lines per wheel notch in the embedded terminal (default: 3) |
 | `VMDESK_AGENT_BIN` | Agent build to install, instead of `vmdesk-agent-x86_64` next to the binaries |
 | `VMDESK_ALL_GPU_DRIVERS` | `1` keeps every graphics driver loaded (needed only without a hardware Vulkan driver) |
 | `VMDESK_NO_BACKGROUND` | `1` stops the app from connecting to VMs on its own, for demos |

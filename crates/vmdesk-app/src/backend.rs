@@ -113,6 +113,11 @@ impl Backend {
         }
     }
 
+    /// The runtime the background work runs on, for long-lived tasks such as terminals.
+    pub(crate) fn handle(&self) -> Handle {
+        self.rt.clone()
+    }
+
     /// Runs `fut` on tokio; the returned future can be awaited from any executor.
     fn run<T, F>(&self, fut: F) -> impl Future<Output = anyhow::Result<T>> + use<T, F>
     where
@@ -529,7 +534,7 @@ async fn work_line(db: &Db, vm: VmId) -> anyhow::Result<Option<String>> {
 
 /// A session to `vm` over its path, trusting no new host keys. Close the transport when
 /// done.
-async fn connect(db: &Db, vm: VmId) -> anyhow::Result<(Vm, Transport, Arc<SshSession>)> {
+pub(crate) async fn connect(db: &Db, vm: VmId) -> anyhow::Result<(Vm, Transport, Arc<SshSession>)> {
     let all = db.list_vms(&ListFilter::default()).await?;
     let target = all
         .iter()
