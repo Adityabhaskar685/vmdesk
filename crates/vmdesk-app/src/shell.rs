@@ -46,28 +46,12 @@ impl AppView {
     /// the theme picker. Where the app draws its own window frame, it also moves the window
     /// and holds the window buttons.
     pub(super) fn top_bar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let machine = self
-            .selected
-            .and_then(|id| self.vms.iter().find(|v| v.id == id))
-            .map(|vm| {
-                div()
-                    .h(px(28.))
-                    .px(space::S)
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(radius::M)
-                    .bg(rgb(palette().elevated))
-                    .border_1()
-                    .border_color(rgb(palette().border))
-                    .child(dot(tone_color(headline_tone(self.headline(vm))), 7.))
-                    .child(
-                        div()
-                            .text_size(text::META)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(vm.name.clone()),
-                    )
-            });
+        let machines: Vec<AnyElement> = self
+            .machine_tabs()
+            .into_iter()
+            .filter_map(|(id, shells)| self.vms.iter().find(|v| v.id == id).map(|vm| (vm, shells)))
+            .map(|(vm, shells)| self.machine_tab(vm, shells, cx).into_any_element())
+            .collect();
         let leading = div()
             .flex()
             .items_center()
@@ -87,7 +71,7 @@ impl AppView {
                             .child("VMDesk"),
                     ),
             )
-            .children(machine)
+            .children(machines)
             .when(self.selected.is_some(), |d| {
                 d.child(div().w(space::S)).child(self.view_switch(cx))
             });
@@ -102,6 +86,73 @@ impl AppView {
             leading.into_any_element(),
             trailing.into_any_element(),
         )
+    }
+
+    /// One open machine in the top bar. A machine with shells keeps them running while you
+    /// look at another; its × closes them.
+    fn machine_tab(&self, vm: &Vm, shells: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = vm.id;
+        let selected = self.selected == Some(id);
+        div()
+            .id(SharedString::from(format!("machine-tab-{id}")))
+            .debug_selector({
+                let name = vm.name.clone();
+                move || format!("machine-tab: {name}")
+            })
+            .h(px(28.))
+            .pl(space::S)
+            .pr(if shells { px(4.) } else { space::S })
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .rounded(radius::M)
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgb(if selected {
+                palette().border_strong
+            } else {
+                palette().surface
+            }))
+            .when(selected, |d| d.bg(rgb(palette().elevated)))
+            .when(!selected, |d| d.hover(|s| s.bg(rgb(palette().hover))))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.close_search(window, cx);
+                this.select(id, cx);
+            }))
+            .child(dot(tone_color(headline_tone(self.headline(vm))), 7.))
+            .child(
+                div()
+                    .text_size(text::META)
+                    .font_weight(if selected {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    })
+                    .text_color(rgb(if selected {
+                        palette().text
+                    } else {
+                        palette().text_secondary
+                    }))
+                    .child(vm.name.clone()),
+            )
+            .when(shells, |d| {
+                d.child(icon(Icon::Terminal, px(11.), palette().text_muted))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("machine-tab-close-{id}")))
+                            .size(px(18.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(radius::S)
+                            .hover(|s| s.bg(rgb(palette().border_strong)))
+                            .child(icon(Icon::Close, px(10.), palette().text_muted))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_machine_shells(id, window, cx);
+                            })),
+                    )
+            })
     }
 
     fn search_button(&self, cx: &mut Context<Self>) -> impl IntoElement {

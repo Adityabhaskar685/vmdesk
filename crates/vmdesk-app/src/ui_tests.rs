@@ -1376,6 +1376,56 @@ fn a_theme_picked_from_the_list_is_applied_and_saved(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn shells_keep_running_on_their_machine_while_another_is_selected(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let other = add_vm(&env, "other");
+    let (view, cx) = open_lab(cx, &env);
+    let lab = view.read_with(cx, |v, _| v.selected.unwrap());
+
+    click(cx, "terminal");
+    wait(cx, &view, "lab's shell", |v| active_leaf_ids(v).len() == 1);
+    let shell = view.read_with(cx, |v, _| {
+        v.terminal.as_ref().unwrap().active_view().cloned().unwrap()
+    });
+
+    view.update(cx, |v, cx| v.select(other, cx));
+    wait(cx, &view, "the other machine", |v| {
+        v.selected == Some(other)
+    });
+    view.read_with(cx, |v, _| {
+        assert!(v.terminal.is_none(), "the other machine has no shells");
+        assert!(
+            v.parked.contains_key(&lab),
+            "lab's shells are parked, not closed"
+        );
+        assert_eq!(v.machine_tabs(), vec![(lab, true), (other, false)]);
+    });
+    assert!(shown(cx, "machine-tab: lab"));
+
+    view.update(cx, |v, cx| v.select(lab, cx));
+    wait(cx, &view, "lab again", |v| v.selected == Some(lab));
+    view.read_with(cx, |v, _| {
+        let back = v
+            .terminal
+            .as_ref()
+            .and_then(TerminalPane::active_view)
+            .cloned();
+        assert_eq!(back.as_ref(), Some(&shell), "the same shell comes back");
+        assert_eq!(
+            v.tab,
+            Tab::Terminal,
+            "left on its shells, it comes back to them"
+        );
+        assert!(v.parked.is_empty());
+    });
+
+    view.update_in(cx, |v, window, cx| v.close_machine_shells(lab, window, cx));
+    wait(cx, &view, "lab's shells closed", |v| v.terminal.is_none());
+    view.read_with(cx, |v, _| assert_eq!(v.machine_tabs(), vec![(lab, false)]));
+}
+
+#[gpui::test]
 fn the_machine_list_hides_and_shows(cx: &mut TestAppContext) {
     let env = env();
     seed_vm(&env, AgentState::Unknown, None);

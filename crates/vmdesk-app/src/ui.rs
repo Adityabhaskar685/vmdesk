@@ -217,6 +217,11 @@ pub(crate) struct TerminalPane {
     next_tab: usize,
     next_shell: usize,
     next_leaf: u64,
+    /// When the pane was opened, which orders the machine tabs.
+    opened: Instant,
+    /// Whether the Terminal view was showing when another machine was selected, so
+    /// coming back shows the shells again.
+    left_on_terminal: bool,
 }
 
 impl TerminalPane {
@@ -229,6 +234,8 @@ impl TerminalPane {
             next_tab: 1,
             next_shell: 1,
             next_leaf: 1,
+            opened: Instant::now(),
+            left_on_terminal: false,
         }
     }
 
@@ -278,6 +285,8 @@ pub struct AppView {
     /// The selected VM's shells while the Terminal tab is open. Dropping a view closes
     /// its pty.
     terminal: Option<TerminalPane>,
+    /// The other machines' shells, kept running while another machine is selected.
+    parked: HashMap<VmId, TerminalPane>,
     /// A host key the user is deciding on, for the selected VM.
     key_prompt: Option<KeyProblem>,
 }
@@ -309,6 +318,7 @@ impl AppView {
             menu_open: false,
             show_machines: true,
             terminal: None,
+            parked: HashMap::new(),
             key_prompt: None,
         }
     }
@@ -386,6 +396,8 @@ impl AppView {
                         self.tab = Tab::Overview;
                     }
                 }
+                let vms = &self.vms;
+                self.parked.retain(|id, _| vms.iter().any(|v| v.id == *id));
             }
             Err(e) => self.message = Some((format!("loading inventory: {e:#}"), true)),
         }
@@ -418,11 +430,18 @@ impl AppView {
         self.message = None;
         self.timeline = TimelineWindow::LATEST;
         self.scrolled_for = None;
-        // A shell belongs to its VM: switching machines closes it.
-        self.terminal = None;
-        if self.tab == Tab::Terminal {
-            self.tab = Tab::Overview;
+        // Shells keep running on the machine they belong to: park them, and bring back
+        // the new machine's.
+        if let Some(mut pane) = self.terminal.take() {
+            pane.left_on_terminal = self.tab == Tab::Terminal;
+            self.parked.insert(pane.vm, pane);
         }
+        self.terminal = self.parked.remove(&id);
+        self.tab = match &self.terminal {
+            Some(pane) if pane.left_on_terminal => Tab::Terminal,
+            _ if self.tab == Tab::Terminal => Tab::Overview,
+            _ => self.tab,
+        };
         self.load_detail(id, cx);
         cx.notify();
     }
@@ -471,6 +490,7 @@ impl AppView {
         }
         let backend = self.backend.clone();
         let view = cx.new(|cx| TerminalView::new(backend, id, cx));
+        let vm_for_exit = id;
         let focus = view.read(cx).focus_handle().clone();
         let pane = self.terminal.get_or_insert_with(|| TerminalPane::new(id));
         let tab_title: SharedString = format!("Terminal {}", pane.next_tab).into();
@@ -490,7 +510,7 @@ impl AppView {
             zoomed: None,
         });
         pane.active = pane.tabs.len() - 1;
-        Self::close_when_exited(&view, leaf_id, window, cx);
+        Self::close_when_exited(&view, vm_for_exit, leaf_id, window, cx);
         window.focus(&focus, cx);
         cx.notify();
     }
@@ -499,14 +519,71 @@ impl AppView {
     /// dropped connection leaves the pane open with Reconnect.
     fn close_when_exited(
         view: &Entity<TerminalView>,
+        vm: VmId,
         leaf: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         cx.subscribe_in(view, window, move |this, _, _: &ShellExited, window, cx| {
-            this.close_terminal_leaf(leaf, window, cx);
+            if this.terminal.as_ref().is_some_and(|pane| pane.vm == vm) {
+                this.close_terminal_leaf(leaf, window, cx);
+            } else {
+                this.close_parked_leaf(vm, leaf, cx);
+            }
         })
         .detach();
+    }
+
+    /// Closes shell `leaf` of a machine that is not selected, and its pane with its last
+    /// shell.
+    fn close_parked_leaf(&mut self, vm: VmId, leaf: u64, cx: &mut Context<Self>) {
+        let Some(pane) = self.parked.get_mut(&vm) else {
+            return;
+        };
+        pane.tabs.retain_mut(|tab| {
+            if let Some(root) = tab.root.take() {
+                tab.root = root.into_without(leaf).0;
+            }
+            tab.root.is_some()
+        });
+        pane.active = pane.active.min(pane.tabs.len().saturating_sub(1));
+        if pane.tabs.is_empty() {
+            self.parked.remove(&vm);
+        }
+        cx.notify();
+    }
+
+    /// Closes every shell on `vm`, from its machine tab.
+    pub(super) fn close_machine_shells(
+        &mut self,
+        vm: VmId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal.as_ref().is_some_and(|pane| pane.vm == vm) {
+            self.terminal = None;
+            if self.tab == Tab::Terminal {
+                self.tab = Tab::Overview;
+            }
+            window.focus(&self.focus, cx);
+        }
+        self.parked.remove(&vm);
+        cx.notify();
+    }
+
+    /// The machines shown as tabs in the top bar: those with shells, in the order their
+    /// shells were opened, then the selected machine if it has none.
+    pub(super) fn machine_tabs(&self) -> Vec<(VmId, bool)> {
+        let mut panes: Vec<&TerminalPane> =
+            self.terminal.iter().chain(self.parked.values()).collect();
+        panes.sort_by_key(|p| p.opened);
+        let mut tabs: Vec<(VmId, bool)> = panes.into_iter().map(|p| (p.vm, true)).collect();
+        if let Some(id) = self.selected
+            && !tabs.iter().any(|(vm, _)| *vm == id)
+        {
+            tabs.push((id, false));
+        }
+        tabs
     }
 
     fn select_terminal_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -603,6 +680,7 @@ impl AppView {
         let vm = pane.vm;
         let backend = self.backend.clone();
         let view = cx.new(|cx| TerminalView::new(backend, vm, cx));
+        let vm_for_exit = vm;
         let focus = view.read(cx).focus_handle().clone();
         let Some(pane) = self.terminal.as_mut() else {
             return;
@@ -626,7 +704,7 @@ impl AppView {
             tab.focused = leaf_id;
             tab.zoomed = None;
         }
-        Self::close_when_exited(&view, leaf_id, window, cx);
+        Self::close_when_exited(&view, vm_for_exit, leaf_id, window, cx);
         window.focus(&focus, cx);
         cx.notify();
     }
