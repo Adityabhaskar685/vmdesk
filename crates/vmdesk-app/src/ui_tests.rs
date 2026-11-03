@@ -1181,7 +1181,10 @@ fn the_terminal_maximizes_and_restores(cx: &mut TestAppContext) {
         !shown(cx, "collect") && !shown(cx, "add-vm"),
         "the machine header and list are hidden while maximized"
     );
-    assert!(shown(cx, "tab-overview"), "the top bar's views stay, to leave by");
+    assert!(
+        shown(cx, "tab-overview"),
+        "the top bar's views stay, to leave by"
+    );
 
     click(cx, "terminal-max");
     wait(cx, &view, "the restored pane", |v| {
