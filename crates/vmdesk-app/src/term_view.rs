@@ -76,6 +76,7 @@ const FONT_FALLBACKS: &[&str] = &[
     "SauceCodePro Nerd Font Mono",
     "MesloLGS NF",
     "Symbols Nerd Font Mono",
+    "JetBrains Mono",
     "Ubuntu Mono",
     "Noto Sans Mono",
     "DejaVu Sans Mono",

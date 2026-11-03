@@ -9,7 +9,7 @@
 #![allow(clippy::unreadable_literal)] // hex colours read best as written
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
 /// Every colour a view draws with.
@@ -189,6 +189,10 @@ static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| {
 /// Bumped on every switch, so views that cache colours (terminals) know to refresh.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// Whether every Ghostty theme has been read. Until the picker asks for them, only the
+/// saved theme's file is.
+static ALL_LOADED: AtomicBool = AtomicBool::new(false);
+
 /// The active theme's colours.
 #[must_use]
 pub fn palette() -> Palette {
@@ -216,8 +220,20 @@ pub fn themes() -> Vec<Arc<Theme>> {
         .map_or_else(|_| Vec::new(), |r| r.themes.clone())
 }
 
-/// Makes the theme called `name` (any case) the active one. `false` if there is none.
+/// Makes the theme called `name` (any case) the active one, reading just its Ghostty file
+/// when the full list has not been loaded. `false` if there is none.
 pub fn select(name: &str) -> bool {
+    let known = REGISTRY
+        .read()
+        .is_ok_and(|r| r.themes.iter().any(|t| t.name.eq_ignore_ascii_case(name)));
+    if !known && !ALL_LOADED.load(Ordering::Acquire) {
+        let Some(theme) = find_ghostty_theme(&ghostty_theme_dirs(), name) else {
+            return false;
+        };
+        if let Ok(mut registry) = REGISTRY.write() {
+            registry.themes.push(Arc::new(theme));
+        }
+    }
     let Ok(mut registry) = REGISTRY.write() else {
         return false;
     };
@@ -234,9 +250,31 @@ pub fn select(name: &str) -> bool {
     true
 }
 
+/// The Ghostty theme called `name`: its file is named after it, so only that file is read.
+fn find_ghostty_theme(dirs: &[PathBuf], name: &str) -> Option<Theme> {
+    dirs.iter().find_map(|dir| {
+        let entries = std::fs::read_dir(dir).ok()?;
+        entries
+            .flatten()
+            .find(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|f| f.trim_end_matches(".conf").eq_ignore_ascii_case(name))
+            })
+            .and_then(|e| parse_ghostty(&e.path()))
+    })
+}
+
+/// Reads every Ghostty theme, once: the first call does the work, later ones return at once.
+pub fn ensure_all_loaded() {
+    if !ALL_LOADED.swap(true, Ordering::AcqRel) {
+        load_ghostty_themes();
+    }
+}
+
 /// Adds Ghostty's theme files to the built-in themes. A file whose name repeats one already
 /// found is skipped, so a built-in theme keeps its name.
-pub fn load_ghostty_themes() {
+fn load_ghostty_themes() {
     let mut found: Vec<Theme> = Vec::new();
     for dir in ghostty_theme_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -512,6 +550,23 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join(SETTINGS)).unwrap()).unwrap();
         assert_eq!(saved["theme"], "VMDesk Light");
         assert_eq!(saved["other"], 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn one_theme_is_found_by_its_file_name_alone() {
+        let dir = scratch("find");
+        write_theme(
+            &dir,
+            "Night Owl",
+            "background = #011627\nforeground = #d6deeb\n",
+        );
+        write_theme(&dir, "Broken", "not a theme\n");
+        let dirs = [scratch("missing"), dir.clone()];
+        let found = find_ghostty_theme(&dirs, "night owl").expect("found, ignoring case");
+        assert_eq!(found.name, "Night Owl");
+        assert!(find_ghostty_theme(&dirs, "Broken").is_none());
+        assert!(find_ghostty_theme(&dirs, "Nope").is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 

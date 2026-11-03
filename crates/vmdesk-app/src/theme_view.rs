@@ -26,6 +26,7 @@ pub struct ThemePicker {
 
 impl ThemePicker {
     pub fn new(cx: &mut Context<AppView>) -> Self {
+        crate::theme::palette::ensure_all_loaded();
         let field = cx.new(|cx| TextField::new("Filter themes", false, cx));
         let edits = cx.observe(&field, |this, field, cx| {
             let query = field.read(cx).text().to_owned();

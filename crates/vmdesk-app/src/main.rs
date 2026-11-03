@@ -5,6 +5,7 @@ mod agent_view;
 mod backend;
 mod chrome;
 mod field;
+mod fonts;
 mod form;
 mod gpu;
 mod icon;
@@ -68,10 +69,10 @@ fn main() -> anyhow::Result<()> {
     let mut backend = Backend::new(rt.handle().clone(), db, dir);
     backend.background = std::env::var_os("VMDESK_NO_BACKGROUND").is_none();
     backend.start_background();
-    theme::palette::load_ghostty_themes();
     theme::select_saved(&backend.data_dir);
 
     gpui_platform::application().run(move |cx: &mut App| {
+        fonts::register(cx);
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         let opened = cx.open_window(
             WindowOptions {

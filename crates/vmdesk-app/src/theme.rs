@@ -34,11 +34,10 @@ pub mod text {
     pub const SMALL: Pixels = px(11.);
 }
 
-/// The UI font. It needs real weight faces: GPUI cannot pick weights from a variable font,
-/// and the system default here (Ubuntu) is one.
-pub const SANS: &str = "Noto Sans";
-/// For commands, paths and addresses only.
-pub const MONO: &str = "Noto Sans Mono";
+/// The UI font, built in (see `fonts.rs`).
+pub const SANS: &str = "Inter";
+/// For commands, paths, addresses and the terminal's fallback, built in.
+pub const MONO: &str = "JetBrains Mono";
 /// Height of buttons and inputs.
 pub const CONTROL_HEIGHT: Pixels = px(32.);
 
