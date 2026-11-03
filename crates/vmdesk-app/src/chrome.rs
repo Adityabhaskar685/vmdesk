@@ -7,7 +7,8 @@ use gpui::{
     ResizeEdge, Size, Window, canvas, div, point, prelude::*, px, rgb,
 };
 
-use crate::theme::{color, text};
+use crate::icon::{Icon, icon};
+use crate::theme::{palette, text};
 
 /// Width of the strip along each window edge that resizes the window.
 const EDGE: Pixels = px(6.);
@@ -86,7 +87,7 @@ pub fn frame(window: &Window, content: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-fn control(id: &'static str, glyph: &'static str, close: bool) -> gpui::Stateful<gpui::Div> {
+fn control(id: &'static str, glyph: Icon, close: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .w(px(40.))
@@ -95,13 +96,17 @@ fn control(id: &'static str, glyph: &'static str, close: bool) -> gpui::Stateful
         .items_center()
         .justify_center()
         .text_size(text::BODY)
-        .text_color(rgb(color::TEXT_SECONDARY))
+        .text_color(rgb(palette().text_secondary))
         .cursor_pointer()
         .hover(move |s| {
-            s.bg(rgb(if close { color::RED } else { color::HOVER }))
-                .text_color(rgb(color::TEXT))
+            s.bg(rgb(if close {
+                palette().red
+            } else {
+                palette().hover
+            }))
+            .text_color(rgb(palette().text))
         })
-        .child(glyph)
+        .child(icon(glyph, px(14.), palette().text_secondary))
 }
 
 /// The title bar, or nothing when the compositor draws one. `leading` sits before the
@@ -122,9 +127,9 @@ pub fn title_bar(
             .flex_shrink_0()
             .flex()
             .items_center()
-            .bg(rgb(color::SURFACE))
+            .bg(rgb(palette().surface))
             .border_b_1()
-            .border_color(rgb(color::BORDER))
+            .border_color(rgb(palette().border))
             .px(px(8.))
             .children(leading)
             .child(
@@ -136,7 +141,7 @@ pub fn title_bar(
                     .items_center()
                     .px_3()
                     .text_size(text::BODY)
-                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .text_color(rgb(palette().text_secondary))
                     .child(title)
                     .on_mouse_down(MouseButton::Left, |e, window, _| {
                         if e.click_count >= 2 {
@@ -150,14 +155,22 @@ pub fn title_bar(
                     }),
             )
             .child(
-                control("win-minimize", "—", false)
+                control("win-minimize", Icon::WinMinimize, false)
                     .on_click(|_, window, _| window.minimize_window()),
             )
             .child(
-                control("win-maximize", if maximized { "❐" } else { "☐" }, false)
-                    .on_click(|_, window, _| window.zoom_window()),
+                control(
+                    "win-maximize",
+                    if maximized {
+                        Icon::WinRestore
+                    } else {
+                        Icon::WinMaximize
+                    },
+                    false,
+                )
+                .on_click(|_, window, _| window.zoom_window()),
             )
-            .child(control("win-close", "✕", true).on_click(|_, _, cx: &mut App| cx.quit()))
+            .child(control("win-close", Icon::Close, true).on_click(|_, _, cx: &mut App| cx.quit()))
             .into_any_element(),
     )
 }

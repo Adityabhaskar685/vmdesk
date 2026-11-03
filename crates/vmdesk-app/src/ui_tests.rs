@@ -1338,6 +1338,40 @@ fn a_shell_zooms_over_its_tab_and_back(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_theme_picked_from_the_list_is_applied_and_saved(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let data_dir = env.backend.data_dir.clone();
+    let (view, cx) = open_lab(cx, &env);
+    view.update_in(cx, |v, window, cx| {
+        let focus = v.focus.clone();
+        window.focus(&focus, cx);
+    });
+
+    cx.simulate_keystrokes("ctrl-shift-p");
+    assert!(view.read_with(cx, |v, _| v.themes.is_some()));
+    assert!(
+        shown(cx, "theme-VMDesk Dark"),
+        "the list opens with every theme"
+    );
+    cx.simulate_keystrokes("l i g h t");
+    settle(cx);
+    assert!(!shown(cx, "theme-VMDesk Dark"), "the filter hides the rest");
+
+    click(cx, "theme-VMDesk Light");
+    settle(cx);
+    let light = crate::theme::palette::LIGHT;
+    assert_eq!(crate::theme::palette().bg, light.bg);
+    let saved = std::fs::read_to_string(data_dir.join("settings.json")).unwrap();
+    assert!(saved.contains("VMDesk Light"), "{saved}");
+
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |v, _| v.themes.is_none()));
+    crate::theme::palette::select(crate::theme::palette::DEFAULT);
+    std::fs::remove_dir_all(data_dir).ok();
+}
+
+#[gpui::test]
 fn the_machine_list_hides_and_shows(cx: &mut TestAppContext) {
     let env = env();
     seed_vm(&env, AgentState::Unknown, None);

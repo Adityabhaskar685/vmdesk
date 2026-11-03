@@ -16,6 +16,7 @@ mod term_session;
 mod term_view;
 mod terminal;
 mod theme;
+mod theme_view;
 mod timeline_view;
 mod ui;
 mod work_view;
@@ -67,6 +68,8 @@ fn main() -> anyhow::Result<()> {
     let mut backend = Backend::new(rt.handle().clone(), db, dir);
     backend.background = std::env::var_os("VMDESK_NO_BACKGROUND").is_none();
     backend.start_background();
+    theme::palette::load_ghostty_themes();
+    theme::select_saved(&backend.data_dir);
 
     gpui_platform::application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);

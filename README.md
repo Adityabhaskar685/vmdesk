@@ -144,6 +144,13 @@ The header's buttons:
 **+ Add VM** opens a form for the name, address, port, user, login method (ssh-agent and default
 keys, a key file, or a password in the OS keychain) and an optional jump host.
 
+**Themes.** The palette button beside **Add VM**, or Ctrl+Shift+P, opens the theme picker:
+VMDesk Dark (the default), VMDesk Light, and every Ghostty theme installed on the machine
+(Ghostty's own themes and any in `~/.config/ghostty/themes`). Type to filter, and click a theme
+to use it at once, terminals included; programs that set their own colours keep them. The
+choice is saved in `settings.json` in the data directory and used at the next start.
+`VMDESK_THEME` picks a theme by name for one run.
+
 The app runs the reachability monitor and the snapshot poller itself. Nothing else needs to be
 running.
 
@@ -264,6 +271,7 @@ branches, commit subjects, containers, tmux sessions and listening processes.
 | --- | --- |
 | `VMDESK_DATA_DIR` | Data directory (also `--data-dir` on the CLI) |
 | `VMDESK_TERMINAL` | External terminal command for **Open in external terminal**, such as `ghostty -e` |
+| `VMDESK_THEME` | Theme to use for this run, by name, such as `VMDesk Light` or `Gruvbox Dark` |
 | `VMDESK_TERM_FONT` | Font family for the embedded terminal (default: the first installed of Hack/JetBrainsMono/FiraCode/CaskaydiaCove/SauceCodePro Nerd Font Mono, else Noto Sans Mono) |
 | `VMDESK_TERM_FONT_SIZE` | Font size in pixels for the embedded terminal (default: 14) |
 | `VMDESK_SCROLL_LINES` | Lines per wheel notch in the embedded terminal (default: 3) |

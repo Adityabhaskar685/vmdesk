@@ -159,8 +159,9 @@ pub fn key_event(keystroke: &Keystroke, action: KeyAction) -> Option<KeyEvent<'_
 }
 
 /// Ctrl+Shift shortcuts that belong to the app, not the shell: new tab, close, maximize,
-/// split right, split down, toggle the machine list and zoom. The terminal lets them bubble.
-pub(crate) const APP_SHORTCUTS: [&str; 7] = ["t", "w", "m", "d", "e", "b", "z"];
+/// split right, split down, toggle the machine list, zoom and the theme picker. The
+/// terminal lets them bubble.
+pub(crate) const APP_SHORTCUTS: [&str; 8] = ["t", "w", "m", "d", "e", "b", "z", "p"];
 
 #[cfg(test)]
 mod tests {

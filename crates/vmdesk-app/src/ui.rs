@@ -25,8 +25,9 @@ use crate::kit::{
 use crate::search_view::{DEBOUNCE, Search, SearchState};
 use crate::term_view::{ShellExited, TerminalView};
 use crate::theme::{
-    CONTROL_HEIGHT, MONO, SANS, Tone, color, radius, space, text, tint, tone_color,
+    CONTROL_HEIGHT, MONO, SANS, Tone, palette, radius, space, text, tint, tone_color,
 };
+use crate::theme_view::ThemePicker;
 use crate::timeline_view::{HIGHLIGHT, TimelineWindow};
 use crate::work_view::{card_view, present_sessions, present_work, sessions_view, sidebar_line};
 
@@ -260,6 +261,8 @@ pub struct AppView {
     inline: Option<Inline>,
     /// The event search, while it is open in place of the selected VM.
     search: Option<Search>,
+    /// The theme picker, while it is open in place of the selected VM.
+    pub(crate) themes: Option<ThemePicker>,
     /// When the selected VM was last collected by this window.
     collected_at: Option<Instant>,
     busy: Option<&'static str>,
@@ -297,6 +300,7 @@ impl AppView {
             scrolled_for: None,
             inline: None,
             search: None,
+            themes: None,
             collected_at: None,
             busy: None,
             message: None,
@@ -713,6 +717,24 @@ impl AppView {
     }
 
     /// The panel button that shows and hides the machine list.
+    fn themes_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("open-themes")
+            .debug_selector(|| "open-themes".to_owned())
+            .size(px(28.))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .rounded(radius::M)
+            .cursor_pointer()
+            .when(self.themes.is_some(), |d| d.bg(rgb(palette().hover)))
+            .hover(|d| d.bg(rgb(palette().hover)))
+            .child(icon(Icon::Palette, px(15.), palette().text_secondary))
+            .on_click(cx.listener(|this, _, window, cx| this.open_themes(window, cx)))
+            .into_any_element()
+    }
+
     fn machines_button(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id(id)
@@ -724,9 +746,9 @@ impl AppView {
             .justify_center()
             .rounded(radius::M)
             .cursor_pointer()
-            .when(!self.show_machines, |d| d.bg(rgb(color::HOVER)))
-            .hover(|d| d.bg(rgb(color::HOVER)))
-            .child(icon(Icon::Sidebar, px(15.), color::TEXT_SECONDARY))
+            .when(!self.show_machines, |d| d.bg(rgb(palette().hover)))
+            .hover(|d| d.bg(rgb(palette().hover)))
+            .child(icon(Icon::Sidebar, px(15.), palette().text_secondary))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_machines(cx)))
             .into_any_element()
     }
@@ -831,6 +853,31 @@ impl AppView {
         .detach();
     }
 
+    /// Runs the Ctrl+Shift shortcut for `key` (see [`crate::term_keys::APP_SHORTCUTS`]), the
+    /// terminal ones only while the Terminal tab is open. `false` when `key` is none of them.
+    fn app_shortcut(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let leaf = self.focused_terminal_leaf();
+        let terminal = self.tab == Tab::Terminal;
+        match key {
+            "b" => self.toggle_machines(cx),
+            "p" => self.open_themes(window, cx),
+            "t" if terminal => self.add_terminal_tab(window, cx),
+            "m" if terminal => self.toggle_terminal_max(cx),
+            "w" | "d" | "e" | "z" if terminal => {
+                if let Some(leaf) = leaf {
+                    match key {
+                        "w" => self.close_terminal_leaf(leaf, window, cx),
+                        "d" => self.split_terminal_at(leaf, SplitDir::Row, window, cx),
+                        "e" => self.split_terminal_at(leaf, SplitDir::Column, window, cx),
+                        _ => self.toggle_terminal_zoom(leaf, cx),
+                    }
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         if let Some(form) = &self.add {
@@ -846,50 +893,12 @@ impl AppView {
             cx.notify();
             return;
         }
-        if ks.modifiers.control && ks.modifiers.shift && !ks.modifiers.alt && ks.key == "b" {
-            self.toggle_machines(cx);
-            return;
-        }
-        if self.tab == Tab::Terminal
-            && ks.modifiers.control
+        if ks.modifiers.control
             && ks.modifiers.shift
             && !ks.modifiers.alt
+            && self.app_shortcut(&ks.key, window, cx)
         {
-            match ks.key.as_str() {
-                "t" => {
-                    self.add_terminal_tab(window, cx);
-                    return;
-                }
-                "w" => {
-                    if let Some(leaf) = self.focused_terminal_leaf() {
-                        self.close_terminal_leaf(leaf, window, cx);
-                    }
-                    return;
-                }
-                "d" => {
-                    if let Some(leaf) = self.focused_terminal_leaf() {
-                        self.split_terminal_at(leaf, SplitDir::Row, window, cx);
-                    }
-                    return;
-                }
-                "e" => {
-                    if let Some(leaf) = self.focused_terminal_leaf() {
-                        self.split_terminal_at(leaf, SplitDir::Column, window, cx);
-                    }
-                    return;
-                }
-                "m" => {
-                    self.toggle_terminal_max(cx);
-                    return;
-                }
-                "z" => {
-                    if let Some(leaf) = self.focused_terminal_leaf() {
-                        self.toggle_terminal_zoom(leaf, cx);
-                    }
-                    return;
-                }
-                _ => {}
-            }
+            return;
         }
         if ks.modifiers.control && ks.key == "k" {
             self.open_search(window, cx);
@@ -903,11 +912,16 @@ impl AppView {
         let in_search = self
             .search
             .as_ref()
-            .is_some_and(|s| s.field.read(cx).focus_handle().is_focused(window));
+            .is_some_and(|s| s.field.read(cx).focus_handle().is_focused(window))
+            || self
+                .themes
+                .as_ref()
+                .is_some_and(|t| t.field.read(cx).focus_handle().is_focused(window));
         match ks.key.as_str() {
             "escape" if self.menu_open => self.menu_open = false,
             "escape" if self.inline.is_some() => self.cancel_inline(window, cx),
             "escape" if self.search.is_some() => self.close_search(window, cx),
+            "escape" if self.themes.is_some() => self.close_themes(window, cx),
             "enter" if in_inline => self.save_inline(window, cx),
             _ if in_inline || in_search => return,
             _ if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform => return,
@@ -1131,11 +1145,43 @@ impl AppView {
         cx.notify();
     }
 
+    /// Opens the theme picker, or moves the focus back into it.
+    fn open_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.add.is_some() {
+            return;
+        }
+        self.search = None;
+        let picker = self.themes.get_or_insert_with(|| ThemePicker::new(cx));
+        let focus = picker.field.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+        self.inline = None;
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    fn close_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.themes = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Switches to theme `name` everywhere, and saves it for the next start.
+    pub(crate) fn apply_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !crate::theme::palette::select(name) {
+            return;
+        }
+        if let Err(e) = crate::theme::palette::remember(&self.backend.data_dir, name) {
+            self.message = Some((format!("Could not save the theme: {e}"), true));
+        }
+        cx.refresh_windows();
+    }
+
     /// Opens the event search, or moves the focus back into it.
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.add.is_some() {
             return;
         }
+        self.themes = None;
         let search = self.search.get_or_insert_with(|| Search::new(cx));
         let focus = search.field.read(cx).focus_handle().clone();
         window.focus(&focus, cx);
@@ -1570,9 +1616,9 @@ impl AppView {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(color::SURFACE))
+            .bg(rgb(palette().surface))
             .border_r_1()
-            .border_color(rgb(color::BORDER))
+            .border_color(rgb(palette().border))
             .child(
                 div()
                     .px(space::L)
@@ -1585,6 +1631,7 @@ impl AppView {
                         div()
                             .flex()
                             .items_center()
+                            .gap(px(4.))
                             .child(
                                 div()
                                     .flex_1()
@@ -1605,12 +1652,13 @@ impl AppView {
                             .child(
                                 button(Button::Secondary, "add-vm")
                                     .px(space::S)
-                                    .child(icon(Icon::Plus, px(14.), color::TEXT))
+                                    .child(icon(Icon::Plus, px(14.), palette().text))
                                     .child("Add VM")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_add_form(window, cx);
                                     })),
                             )
+                            .child(self.themes_button(cx))
                             .child(self.machines_button("toggle-machines-sidebar", cx)),
                     )
                     .child(self.filter_input(cx)),
@@ -1645,7 +1693,7 @@ impl AppView {
         div()
             .p(space::S)
             .border_t_1()
-            .border_color(rgb(color::BORDER))
+            .border_color(rgb(palette().border))
             .child(
                 div()
                     .id("open-search")
@@ -1659,14 +1707,14 @@ impl AppView {
                     .cursor_pointer()
                     .text_size(text::BODY)
                     .text_color(rgb(if open {
-                        color::TEXT
+                        palette().text
                     } else {
-                        color::TEXT_SECONDARY
+                        palette().text_secondary
                     }))
-                    .when(open, |d| d.bg(tint(color::ACCENT)))
-                    .when(!open, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+                    .when(open, |d| d.bg(tint(palette().accent)))
+                    .when(!open, |d| d.hover(|s| s.bg(rgb(palette().hover))))
                     .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx)))
-                    .child(icon(Icon::Search, px(14.), color::TEXT_MUTED))
+                    .child(icon(Icon::Search, px(14.), palette().text_muted))
                     .child(div().flex_1().child("Search events"))
                     .child(
                         div()
@@ -1676,9 +1724,9 @@ impl AppView {
                             .items_center()
                             .rounded(radius::S)
                             .border_1()
-                            .border_color(rgb(color::BORDER_STRONG))
+                            .border_color(rgb(palette().border_strong))
                             .text_size(text::SMALL)
-                            .text_color(rgb(color::TEXT_MUTED))
+                            .text_color(rgb(palette().text_muted))
                             .child("Ctrl K"),
                     ),
             )
@@ -1698,15 +1746,15 @@ impl AppView {
             .rounded(radius::M)
             .border_1()
             .border_color(rgb(if active {
-                color::ACCENT
+                palette().accent
             } else {
-                color::BORDER_STRONG
+                palette().border_strong
             }))
             .when(active, |d| d.shadow(focus_ring()))
-            .bg(rgb(color::BG))
+            .bg(rgb(palette().bg))
             .cursor_text()
             .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx)))
-            .child(icon(Icon::Search, px(14.), color::TEXT_MUTED))
+            .child(icon(Icon::Search, px(14.), palette().text_muted))
             .child(if active {
                 div()
                     .flex_1()
@@ -1719,13 +1767,13 @@ impl AppView {
                             .ml(px(1.))
                             .w(px(1.5))
                             .h(px(15.))
-                            .bg(rgb(color::ACCENT)),
+                            .bg(rgb(palette().accent)),
                     )
             } else {
                 div()
                     .flex_1()
                     .text_size(text::BODY)
-                    .text_color(rgb(color::TEXT_MUTED))
+                    .text_color(rgb(palette().text_muted))
                     .child("Filter machines")
             })
             .when(active, |d| {
@@ -1739,8 +1787,8 @@ impl AppView {
                         .justify_center()
                         .rounded_full()
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgb(color::HOVER)))
-                        .child(icon(Icon::Close, px(12.), color::TEXT_SECONDARY))
+                        .hover(|s| s.bg(rgb(palette().hover)))
+                        .child(icon(Icon::Close, px(12.), palette().text_secondary))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.filter.clear();
                             cx.notify();
@@ -1768,8 +1816,8 @@ impl AppView {
             .items_start()
             .rounded(radius::M)
             .cursor_pointer()
-            .when(selected, |d| d.bg(tint(color::ACCENT)))
-            .when(!selected, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+            .when(selected, |d| d.bg(tint(palette().accent)))
+            .when(!selected, |d| d.hover(|s| s.bg(rgb(palette().hover))))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.close_search(window, cx);
                 this.select(id, cx);
@@ -1800,7 +1848,7 @@ impl AppView {
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .when(selected, |d| d.text_color(rgb(color::TEXT_SECONDARY)))
+                            .when(selected, |d| d.text_color(rgb(palette().text_secondary)))
                             .debug_selector(|| format!("{}: {sub}", vm.name)),
                     )
                     .when_some(self.work.get(&id), |d, line| {
@@ -1809,34 +1857,58 @@ impl AppView {
             )
     }
 
-    fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The pane shown in place of the selected VM: the Add VM form, the theme picker or
+    /// the event search, when one is open.
+    fn render_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if let Some(form) = &self.add {
-            return div()
-                .id("add-form")
-                .flex_1()
-                .h_full()
-                .overflow_y_scroll()
-                .child(crate::form::render(form, &self.vms, cx))
-                .into_any_element();
+            return Some(
+                div()
+                    .id("add-form")
+                    .flex_1()
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(crate::form::render(form, &self.vms, cx))
+                    .into_any_element(),
+            );
+        }
+        if let Some(picker) = &self.themes {
+            return Some(
+                div()
+                    .id("theme-pane")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(crate::theme_view::render(picker, cx))
+                    .into_any_element(),
+            );
         }
         if let Some(search) = &self.search {
-            return div()
-                .id("search-pane")
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        if let Some(s) = &this.search {
-                            window.focus(&s.field.read(cx).focus_handle().clone(), cx);
-                            window.prevent_default();
-                        }
-                    }),
-                )
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .overflow_y_scroll()
-                .child(crate::search_view::render(search, cx))
-                .into_any_element();
+            return Some(
+                div()
+                    .id("search-pane")
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            if let Some(s) = &this.search {
+                                window.focus(&s.field.read(cx).focus_handle().clone(), cx);
+                                window.prevent_default();
+                            }
+                        }),
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(crate::search_view::render(search, cx))
+                    .into_any_element(),
+            );
+        }
+        None
+    }
+
+    fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(pane) = self.render_overlay(cx) {
+            return pane;
         }
         let Some(vm) = self
             .selected
@@ -1852,7 +1924,7 @@ impl AppView {
                 .child(
                     div()
                         .text_size(text::SECTION)
-                        .text_color(rgb(color::TEXT_SECONDARY))
+                        .text_color(rgb(palette().text_secondary))
                         .child("Select a machine"),
                 )
                 .child(label("or add one with Add VM"))
@@ -1979,11 +2051,11 @@ impl AppView {
             .overflow_hidden()
             .border_1()
             .border_color(rgb(if active {
-                color::BORDER_STRONG
+                palette().border_strong
             } else {
-                color::BORDER
+                palette().border
             }))
-            .bg(rgb(color::ELEVATED))
+            .bg(rgb(palette().elevated))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -2071,17 +2143,17 @@ impl AppView {
             .text_size(text::META)
             .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(if active {
-                color::TEXT
+                palette().text
             } else {
-                color::TEXT_SECONDARY
+                palette().text_secondary
             }))
             .child(icon(
                 Icon::Terminal,
                 px(13.),
                 if active {
-                    color::ACCENT
+                    palette().accent
                 } else {
-                    color::TEXT_MUTED
+                    palette().text_muted
                 },
             ))
             .child(
@@ -2097,7 +2169,7 @@ impl AppView {
                 d.child(
                     div()
                         .text_size(text::SMALL)
-                        .text_color(rgb(color::TEXT_MUTED))
+                        .text_color(rgb(palette().text_muted))
                         .child("zoomed"),
                 )
             })
@@ -2119,8 +2191,8 @@ impl AppView {
             .justify_center()
             .rounded(px(5.))
             .cursor_pointer()
-            .hover(|d| d.bg(rgb(color::HOVER)))
-            .child(icon(glyph, px(13.), color::TEXT_MUTED));
+            .hover(|d| d.bg(rgb(palette().hover)))
+            .child(icon(glyph, px(13.), palette().text_muted));
         if let Some(selector) = debug {
             button = button.debug_selector(move || selector.to_owned());
         }
@@ -2136,9 +2208,9 @@ impl AppView {
             .gap(px(4.))
             .h(px(36.))
             .px(space::M)
-            .bg(rgb(color::SURFACE))
+            .bg(rgb(palette().surface))
             .border_b_1()
-            .border_color(rgb(color::BORDER))
+            .border_color(rgb(palette().border))
             .child(
                 div()
                     .flex()
@@ -2159,16 +2231,16 @@ impl AppView {
                             .pr(px(2.))
                             .rounded(radius::M)
                             .bg(if active {
-                                rgb(color::ELEVATED)
+                                rgb(palette().elevated)
                             } else {
-                                rgb(color::SURFACE)
+                                rgb(palette().surface)
                             })
                             .text_color(if active {
-                                rgb(color::TEXT)
+                                rgb(palette().text)
                             } else {
-                                rgb(color::TEXT_SECONDARY)
+                                rgb(palette().text_secondary)
                             })
-                            .when(!active, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+                            .when(!active, |d| d.hover(|s| s.bg(rgb(palette().hover))))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("terminal-tab-{index}")))
@@ -2194,8 +2266,8 @@ impl AppView {
                                     .justify_center()
                                     .rounded(px(4.))
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(rgb(color::BORDER_STRONG)))
-                                    .child(icon(Icon::Close, px(11.), color::TEXT_MUTED))
+                                    .hover(|s| s.bg(rgb(palette().border_strong)))
+                                    .child(icon(Icon::Close, px(11.), palette().text_muted))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.close_terminal_tab(index, window, cx);
                                     })),
@@ -2324,13 +2396,13 @@ impl AppView {
                 d.child(
                     div()
                         .text_size(text::META)
-                        .text_color(rgb(color::TEXT_SECONDARY))
+                        .text_color(rgb(palette().text_secondary))
                         .child(f),
                 )
             })
             .when_some(agent, |d, agent| {
                 let text = agent.text(Utc::now());
-                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(color::BORDER_STRONG)))
+                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(palette().border_strong)))
                     .child(
                         div()
                             .debug_selector(|| format!("agent: {text}"))
@@ -2338,7 +2410,7 @@ impl AppView {
                             .items_center()
                             .gap(px(6.))
                             .text_size(text::META)
-                            .text_color(rgb(color::TEXT_SECONDARY))
+                            .text_color(rgb(palette().text_secondary))
                             .child(dot(tone_color(agent.tone()), 6.))
                             .child(text.clone()),
                     )
@@ -2453,7 +2525,7 @@ impl AppView {
                             .items_center()
                             .gap(px(6.))
                             .text_size(text::META)
-                            .text_color(rgb(color::TEXT_MUTED))
+                            .text_color(rgb(palette().text_muted))
                             .child(div().font_family(MONO).child(ep))
                             .child("·")
                             .child(self.path_text(vm)),
@@ -2472,7 +2544,7 @@ impl AppView {
             )
             .child(
                 button(Button::Primary, "terminal")
-                    .child(icon(Icon::Terminal, px(14.), color::ON_ACCENT))
+                    .child(icon(Icon::Terminal, px(14.), palette().on_accent))
                     .child("Open terminal")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_tab(Tab::Terminal, window, cx);
@@ -2488,7 +2560,7 @@ impl AppView {
             .px(space::XL)
             .pt(space::L)
             .border_b_1()
-            .border_color(rgb(color::BORDER))
+            .border_color(rgb(palette().border))
             .flex()
             .flex_col()
             .gap(space::M)
@@ -2498,7 +2570,7 @@ impl AppView {
                 d.child(
                     div()
                         .text_size(text::META)
-                        .text_color(rgb(color::AMBER))
+                        .text_color(rgb(palette().amber))
                         .child(detail),
                 )
             })
@@ -2518,9 +2590,9 @@ impl AppView {
                     div()
                         .text_size(text::META)
                         .text_color(rgb(if err {
-                            color::RED
+                            palette().red
                         } else {
-                            color::TEXT_SECONDARY
+                            palette().text_secondary
                         }))
                         .child(m),
                 )
@@ -2586,13 +2658,13 @@ impl AppView {
             .text_size(text::BODY)
             .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(if active {
-                color::TEXT
+                palette().text
             } else {
-                color::TEXT_SECONDARY
+                palette().text_secondary
             }))
-            .when(active, |d| d.bg(rgb(color::ELEVATED)))
+            .when(active, |d| d.bg(rgb(palette().elevated)))
             .when(!active, |d| {
-                d.hover(|s| s.bg(rgb(color::HOVER)).text_color(rgb(color::TEXT)))
+                d.hover(|s| s.bg(rgb(palette().hover)).text_color(rgb(palette().text)))
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select_tab(tab, window, cx);
@@ -2636,8 +2708,8 @@ impl Render for AppView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(color::BG))
-            .text_color(rgb(color::TEXT))
+            .bg(rgb(palette().bg))
+            .text_color(rgb(palette().text))
             .font_family(SANS)
             .text_size(text::BODY)
             .children(crate::chrome::title_bar(

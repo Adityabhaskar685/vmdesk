@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::kit::focus_ring;
-use crate::theme::{color, radius, text};
+use crate::theme::{palette, radius, text};
 
 pub struct TextField {
     focus: FocusHandle,
@@ -73,7 +73,7 @@ impl Render for TextField {
         } else {
             Some(self.text.clone())
         };
-        let caret = || div().w(px(1.5)).h(px(15.)).bg(rgb(color::ACCENT));
+        let caret = || div().w(px(1.5)).h(px(15.)).bg(rgb(palette().accent));
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
@@ -92,12 +92,12 @@ impl Render for TextField {
             .rounded(radius::M)
             .border_1()
             .border_color(rgb(if focused {
-                color::ACCENT
+                palette().accent
             } else {
-                color::BORDER_STRONG
+                palette().border_strong
             }))
             .when(focused, |d| d.shadow(focus_ring()))
-            .bg(rgb(color::SURFACE))
+            .bg(rgb(palette().surface))
             .text_size(text::BODY)
             .overflow_hidden()
             .whitespace_nowrap()
@@ -113,7 +113,7 @@ impl Render for TextField {
                     .flex()
                     .items_center()
                     .gap(px(1.))
-                    .text_color(rgb(color::TEXT_MUTED))
+                    .text_color(rgb(palette().text_muted))
                     .when(focused, |d| d.child(caret()))
                     .child(self.placeholder.clone()),
             })

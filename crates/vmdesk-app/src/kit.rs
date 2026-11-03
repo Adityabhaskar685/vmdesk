@@ -8,7 +8,7 @@ use gpui::{
 
 use crate::icon::{Icon, icon};
 use crate::theme::{
-    CONTROL_HEIGHT, MONO, Tone, alpha, color, radius, space, text, tint, tone_color,
+    CONTROL_HEIGHT, MONO, Tone, alpha, palette, radius, space, text, tint, tone_color,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,22 +39,22 @@ pub fn button(kind: Button, id: &'static str) -> Stateful<Div> {
         .cursor_pointer();
     match kind {
         Button::Primary => base
-            .bg(rgb(color::ACCENT))
-            .border_color(rgb(color::ACCENT))
-            .text_color(rgb(color::ON_ACCENT))
+            .bg(rgb(palette().accent))
+            .border_color(rgb(palette().accent))
+            .text_color(rgb(palette().on_accent))
             .hover(|s| {
-                s.bg(rgb(color::ACCENT_HOVER))
-                    .border_color(rgb(color::ACCENT_HOVER))
+                s.bg(rgb(palette().accent_hover))
+                    .border_color(rgb(palette().accent_hover))
             }),
         Button::Secondary => base
-            .bg(rgb(color::ELEVATED))
-            .border_color(rgb(color::BORDER_STRONG))
-            .text_color(rgb(color::TEXT))
-            .hover(|s| s.bg(rgb(color::HOVER))),
+            .bg(rgb(palette().elevated))
+            .border_color(rgb(palette().border_strong))
+            .text_color(rgb(palette().text))
+            .hover(|s| s.bg(rgb(palette().hover))),
         Button::Danger => base
-            .bg(rgb(color::RED))
-            .border_color(rgb(color::RED))
-            .text_color(rgb(color::ON_ACCENT))
+            .bg(rgb(palette().red))
+            .border_color(rgb(palette().red))
+            .text_color(rgb(palette().on_accent))
             .hover(|s| s.opacity(0.9)),
     }
 }
@@ -71,21 +71,21 @@ pub fn icon_button(id: &'static str, glyph: Icon, active: bool) -> Stateful<Div>
         .justify_center()
         .rounded(radius::M)
         .border_1()
-        .border_color(rgb(color::BORDER_STRONG))
+        .border_color(rgb(palette().border_strong))
         .bg(rgb(if active {
-            color::HOVER
+            palette().hover
         } else {
-            color::ELEVATED
+            palette().elevated
         }))
-        .hover(|s| s.bg(rgb(color::HOVER)))
+        .hover(|s| s.bg(rgb(palette().hover)))
         .cursor_pointer()
-        .child(icon(glyph, px(16.), color::TEXT))
+        .child(icon(glyph, px(16.), palette().text))
 }
 
 pub fn label(content: impl Into<SharedString>) -> Div {
     div()
         .text_size(text::META)
-        .text_color(rgb(color::TEXT_MUTED))
+        .text_color(rgb(palette().text_muted))
         .child(content.into())
 }
 
@@ -124,10 +124,10 @@ pub fn count_badge(n: usize) -> Div {
         .flex()
         .items_center()
         .rounded_full()
-        .bg(rgb(color::HOVER))
+        .bg(rgb(palette().hover))
         .text_size(text::SMALL)
         .font_weight(FontWeight::MEDIUM)
-        .text_color(rgb(color::TEXT_SECONDARY))
+        .text_color(rgb(palette().text_secondary))
         .child(n.to_string())
 }
 
@@ -138,8 +138,8 @@ pub fn card() -> Div {
         .flex_col()
         .rounded(radius::L)
         .border_1()
-        .border_color(rgb(color::BORDER))
-        .bg(rgb(color::SURFACE))
+        .border_color(rgb(palette().border))
+        .bg(rgb(palette().surface))
 }
 
 /// A tinted box for a question or a problem, in `tone`'s colour.
@@ -210,9 +210,9 @@ pub fn table(cols: &[Col], rows: Vec<Vec<String>>) -> Div {
     .h(px(30.))
     .text_size(text::META)
     .font_weight(FontWeight::MEDIUM)
-    .text_color(rgb(color::TEXT_MUTED))
+    .text_color(rgb(palette().text_muted))
     .border_b_1()
-    .border_color(rgb(color::BORDER));
+    .border_color(rgb(palette().border));
     let n = rows.len();
     div()
         .flex()
@@ -229,7 +229,7 @@ pub fn table(cols: &[Col], rows: Vec<Vec<String>>) -> Div {
             .h(px(30.))
             .text_size(text::BODY)
             .when(i + 1 < n, |d| {
-                d.border_b_1().border_color(rgb(color::BORDER))
+                d.border_b_1().border_color(rgb(palette().border))
             })
         }))
 }
@@ -257,7 +257,7 @@ fn shadow() -> Vec<BoxShadow> {
 /// The halo around a focused input.
 pub fn focus_ring() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: tint(color::ACCENT).into(),
+        color: tint(palette().accent).into(),
         offset: point(px(0.), px(0.)),
         blur_radius: px(0.),
         spread_radius: px(2.),
@@ -274,13 +274,13 @@ pub fn menu() -> Div {
         .flex_col()
         .rounded(radius::L)
         .border_1()
-        .border_color(rgb(color::BORDER_STRONG))
-        .bg(rgb(color::ELEVATED))
+        .border_color(rgb(palette().border_strong))
+        .bg(rgb(palette().elevated))
         .shadow(shadow())
 }
 
 pub fn menu_separator() -> Div {
-    div().my(space::XS).h(px(1.)).bg(rgb(color::BORDER))
+    div().my(space::XS).h(px(1.)).bg(rgb(palette().border))
 }
 
 fn menu_row(content: &'static str, text_color: u32) -> Div {
@@ -298,16 +298,23 @@ fn menu_row(content: &'static str, text_color: u32) -> Div {
 
 /// A menu row that cannot be chosen right now.
 pub fn menu_disabled(content: &'static str) -> Div {
-    menu_row(content, color::TEXT_MUTED)
+    menu_row(content, palette().text_muted)
 }
 
 /// A menu row to click; `danger` for one that deletes something.
 pub fn menu_action(id: &'static str, content: &'static str, danger: bool) -> Stateful<Div> {
-    menu_row(content, if danger { color::RED } else { color::TEXT })
-        .id(id)
-        .debug_selector(|| id.to_owned())
-        .cursor_pointer()
-        .hover(|s| s.bg(rgb(color::HOVER)))
+    menu_row(
+        content,
+        if danger {
+            palette().red
+        } else {
+            palette().text
+        },
+    )
+    .id(id)
+    .debug_selector(|| id.to_owned())
+    .cursor_pointer()
+    .hover(|s| s.bg(rgb(palette().hover)))
 }
 
 /// Deferred draw order, bottom to top.

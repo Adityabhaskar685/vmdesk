@@ -16,7 +16,7 @@ use vmdesk_db::{EventKey, SearchHit, text_of};
 use crate::backend::SEARCH_LIMIT;
 use crate::field::TextField;
 use crate::kit::{callout, label};
-use crate::theme::{Tone, color, radius, space, text};
+use crate::theme::{Tone, palette, radius, space, text};
 use crate::timeline_view::{Row, day_header, describe, marker, sentence, time_cell};
 use crate::ui::AppView;
 
@@ -134,7 +134,7 @@ fn quiet(title: String, why: &'static str) -> Div {
         .child(
             div()
                 .text_size(text::BODY)
-                .text_color(rgb(color::TEXT_SECONDARY))
+                .text_color(rgb(palette().text_secondary))
                 .child(title),
         )
         .child(label(why))
@@ -154,7 +154,7 @@ fn hit_row(hit: &Hit, index: usize, cx: &mut Context<AppView>) -> impl IntoEleme
         .gap(space::M)
         .rounded(radius::M)
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(color::HOVER)))
+        .hover(|s| s.bg(rgb(palette().hover)))
         .on_click(cx.listener(move |this, _, window, cx| {
             this.open_hit(vm, key.clone(), window, cx);
         }))

@@ -15,6 +15,11 @@ pub enum Icon {
     Sidebar,
     SplitRow,
     SplitColumn,
+    Check,
+    Palette,
+    WinMinimize,
+    WinMaximize,
+    WinRestore,
 }
 
 enum Stroke {
@@ -80,6 +85,43 @@ impl Icon {
             Self::Sidebar => &[
                 Stroke::Line(&[(3., 3.5), (13., 3.5), (13., 12.5), (3., 12.5), (3., 3.5)]),
                 Stroke::Line(&[(6.5, 3.5), (6.5, 12.5)]),
+            ],
+            // Window controls, drawn like GNOME's: a bar, a square, two stacked squares.
+            Self::WinMinimize => &[Stroke::Line(&[(4., 8.5), (12., 8.5)])],
+            Self::WinMaximize => &[Stroke::Line(&[
+                (4., 4.),
+                (12., 4.),
+                (12., 12.),
+                (4., 12.),
+                (4., 4.),
+            ])],
+            Self::WinRestore => &[
+                Stroke::Line(&[(4., 6.), (10., 6.), (10., 12.), (4., 12.), (4., 6.)]),
+                Stroke::Line(&[(6., 6.), (6., 4.), (12., 4.), (12., 10.), (10., 10.)]),
+            ],
+            Self::Check => &[Stroke::Line(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)])],
+            // A painter's palette: an outline with three paint dots.
+            Self::Palette => &[
+                Stroke::Circle {
+                    x: 8.,
+                    y: 8.,
+                    r: 5.5,
+                },
+                Stroke::Dot {
+                    x: 5.5,
+                    y: 6.5,
+                    r: 1.1,
+                },
+                Stroke::Dot {
+                    x: 8.5,
+                    y: 5.,
+                    r: 1.1,
+                },
+                Stroke::Dot {
+                    x: 10.8,
+                    y: 7.5,
+                    r: 1.1,
+                },
             ],
             // A pane split side by side (a vertical divider).
             Self::SplitRow => &[

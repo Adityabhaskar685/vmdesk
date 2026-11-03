@@ -8,7 +8,7 @@ use vmdesk_core::{CredentialRef, Hop, Vm, VmId};
 use crate::backend::{Auth, NewVmSpec};
 use crate::field::TextField;
 use crate::kit::{Button, button, callout, label};
-use crate::theme::{Tone, color, space, text, tint};
+use crate::theme::{Tone, palette, space, text, tint};
 use crate::ui::AppView;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -207,17 +207,17 @@ fn chip(id: impl Into<gpui::ElementId>, content: String, on: bool) -> gpui::Stat
         .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
         .border_color(rgb(if on {
-            color::ACCENT
+            palette().accent
         } else {
-            color::BORDER_STRONG
+            palette().border_strong
         }))
         .text_color(rgb(if on {
-            color::TEXT
+            palette().text
         } else {
-            color::TEXT_SECONDARY
+            palette().text_secondary
         }))
-        .when(on, |d| d.bg(tint(color::ACCENT)))
-        .when(!on, |d| d.hover(|s| s.bg(rgb(color::HOVER))))
+        .when(on, |d| d.bg(tint(palette().accent)))
+        .when(!on, |d| d.hover(|s| s.bg(rgb(palette().hover))))
         .child(content)
 }
 
@@ -225,7 +225,7 @@ fn caption(content: &str) -> gpui::Div {
     div()
         .text_size(text::META)
         .font_weight(FontWeight::MEDIUM)
-        .text_color(rgb(color::TEXT_SECONDARY))
+        .text_color(rgb(palette().text_secondary))
         .child(content.to_owned())
 }
 
@@ -397,7 +397,7 @@ fn actions(form: &AddForm, cx: &mut Context<AppView>) -> gpui::Div {
     div()
         .pt(space::L)
         .border_t_1()
-        .border_color(rgb(color::BORDER))
+        .border_color(rgb(palette().border))
         .flex()
         .items_center()
         .gap(space::S)

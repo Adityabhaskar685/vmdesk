@@ -46,7 +46,7 @@ use vmdesk_terminal::{
 use crate::backend::Backend;
 use crate::term_keys;
 use crate::term_session::{Ended, SharedTerm, TermEvent, TerminalSession};
-use crate::theme::{MONO, color};
+use crate::theme::{self, MONO, palette};
 
 /// Width kept free at the right of the grid for the scrollbar.
 const SCROLLBAR_WIDTH: f32 = 10.;
@@ -180,13 +180,19 @@ impl TerminalView {
         self.term.lock().unwrap()
     }
 
+    /// The active theme's terminal colours. After a theme switch they are rebuilt and given
+    /// to the terminal, so text without colours of its own takes the new ones.
     fn theme(&self) -> Rc<PanelTheme> {
+        let generation = theme::generation();
         let mut cache = self.theme_cache.borrow_mut();
-        if let Some((_, theme)) = cache.as_ref() {
+        if let Some((seen, theme)) = cache.as_ref()
+            && *seen == generation
+        {
             return theme.clone();
         }
         let theme = Rc::new(PanelTheme::app());
-        *cache = Some((0, theme.clone()));
+        theme.apply(&mut self.term());
+        *cache = Some((generation, theme.clone()));
         theme
     }
 
@@ -617,14 +623,8 @@ impl TerminalView {
 
 /// Builds a terminal with the app's colours and starts connecting it.
 fn start_session(backend: &Backend, vm: VmId) -> (SharedTerm, TerminalSession) {
-    let theme = PanelTheme::app();
     let mut terminal = Terminal::new(80, 24).expect("creating a terminal");
-    terminal.set_default_colors(
-        theme.foreground,
-        theme.background,
-        Some(theme.cursor),
-        &theme.palette,
-    );
+    PanelTheme::app().apply(&mut terminal);
     let term: SharedTerm = std::sync::Arc::new(Mutex::new(terminal));
     let session = TerminalSession::start(backend, vm, &term);
     (term, session)
@@ -662,7 +662,7 @@ fn watch(session: &TerminalSession, cx: &mut Context<TerminalView>) -> Task<()> 
     })
 }
 
-/// The app's colours, resolved once for the terminal's 256-colour palette.
+/// The active theme's terminal colours, resolved for the 256-colour palette.
 struct PanelTheme {
     foreground: Rgb,
     background: Rgb,
@@ -674,18 +674,24 @@ struct PanelTheme {
 
 impl PanelTheme {
     fn app() -> Self {
-        let ansi = [
-            0x1b1e22, 0xec6b6b, 0x45c08a, 0xe6a83e, 0x4f8bf0, 0xb48cf8, 0x3cc2b4, 0xa8afb9,
-            0x737b86, 0xff8a8a, 0x6fdcae, 0xf5c66b, 0x7aa9ff, 0xd0b0ff, 0x6fe0d3, 0xe6e8eb,
-        ];
+        let term = palette().term;
         Self {
-            foreground: rgb_tuple(color::TEXT),
-            background: rgb_tuple(color::BG),
-            cursor: rgb_tuple(color::ACCENT),
-            selection: rgb_tuple(0x2f4a6d),
-            selection_fg: None,
-            palette: default_palette(&ansi),
+            foreground: rgb_tuple(term.foreground),
+            background: rgb_tuple(term.background),
+            cursor: rgb_tuple(term.cursor),
+            selection: rgb_tuple(term.selection),
+            selection_fg: term.selection_fg.map(rgb_tuple),
+            palette: default_palette(&term.ansi),
         }
+    }
+
+    fn apply(&self, terminal: &mut Terminal) {
+        terminal.set_default_colors(
+            self.foreground,
+            self.background,
+            Some(self.cursor),
+            &self.palette,
+        );
     }
 }
 
@@ -917,8 +923,8 @@ impl Render for TerminalView {
                         .rounded(px(6.))
                         .text_xs()
                         .cursor_pointer()
-                        .bg(rgb(color::ELEVATED))
-                        .hover(|d| d.bg(rgb(color::HOVER)))
+                        .bg(rgb(palette().elevated))
+                        .hover(|d| d.bg(rgb(palette().hover)))
                         .child("Reconnect")
                         .on_click(cx.listener(|this, _, _, cx| this.reconnect(cx))),
                 )
@@ -966,13 +972,13 @@ impl TerminalView {
                         .w(px(6.))
                         .h(px(height))
                         .rounded_full()
-                        .bg(Hsla::from(rgb(color::TEXT_MUTED)).opacity(if active {
+                        .bg(Hsla::from(rgb(palette().text_muted)).opacity(if active {
                             0.55
                         } else {
                             0.3
                         }))
                         .group_hover(group, |d| {
-                            d.bg(Hsla::from(rgb(color::TEXT_MUTED)).opacity(0.7))
+                            d.bg(Hsla::from(rgb(palette().text_muted)).opacity(0.7))
                         }),
                 ),
         )
@@ -990,12 +996,12 @@ impl TerminalView {
                 .cursor_pointer()
                 .map(|d| {
                     if primary {
-                        d.bg(rgb(color::ACCENT))
-                            .text_color(rgb(color::ON_ACCENT))
+                        d.bg(rgb(palette().accent))
+                            .text_color(rgb(palette().on_accent))
                             .hover(|d| d.opacity(0.9))
                     } else {
-                        d.bg(rgb(color::ELEVATED))
-                            .hover(|d| d.bg(rgb(color::HOVER)))
+                        d.bg(rgb(palette().elevated))
+                            .hover(|d| d.bg(rgb(palette().hover)))
                     }
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1012,17 +1018,17 @@ impl TerminalView {
             .gap_2()
             .rounded(px(10.))
             .border_1()
-            .border_color(rgb(color::BORDER_STRONG))
-            .bg(rgb(color::ELEVATED))
+            .border_color(rgb(palette().border_strong))
+            .bg(rgb(palette().elevated))
             .shadow_lg()
             .text_sm()
-            .text_color(rgb(color::TEXT))
+            .text_color(rgb(palette().text))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(format!("Paste {lines} lines?"))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(color::TEXT_MUTED))
+                    .text_color(rgb(palette().text_muted))
                     .child("The program here hasn't turned on bracketed paste, so a shell runs each line as a command as soon as it arrives."),
             )
             .child(

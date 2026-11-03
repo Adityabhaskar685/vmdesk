@@ -6,7 +6,7 @@ use vmdesk_core::human::{ago, duration};
 use vmdesk_proto::Snapshot;
 
 use crate::kit::{Col, card, col, count_badge, label, mono, table};
-use crate::theme::{color, radius, space, text};
+use crate::theme::{palette, radius, space, text};
 
 pub fn render(s: &Snapshot) -> Div {
     let cards: Vec<AnyElement> = vec![
@@ -61,9 +61,9 @@ fn stat(caption: &str, value: String, used: Option<(u64, u64)>) -> Div {
                 (used as f32 / total as f32).clamp(0., 1.)
             };
             let fill = match share {
-                s if s >= 0.9 => color::RED,
-                s if s >= 0.75 => color::AMBER,
-                _ => color::ACCENT,
+                s if s >= 0.9 => palette().red,
+                s if s >= 0.75 => palette().amber,
+                _ => palette().accent,
             };
             d.child(
                 div()
@@ -71,7 +71,7 @@ fn stat(caption: &str, value: String, used: Option<(u64, u64)>) -> Div {
                     .w(px(132.))
                     .h(px(4.))
                     .rounded_full()
-                    .bg(rgb(color::HOVER))
+                    .bg(rgb(palette().hover))
                     .child(
                         div()
                             .h_full()

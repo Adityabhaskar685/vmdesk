@@ -15,7 +15,7 @@ use vmdesk_db::{Line, Note, NoteId, SessionId, Span, WorkSession, code, plain, t
 use crate::field::TextField;
 use crate::icon::{Icon, icon};
 use crate::kit::{Button, button, card, label, pill};
-use crate::theme::{MONO, Tone, color, radius, space, text};
+use crate::theme::{MONO, Tone, palette, radius, space, text};
 use crate::timeline_view::day_header;
 use crate::ui::AppView;
 
@@ -346,8 +346,8 @@ fn small_icon_button(id: ElementId) -> Stateful<Div> {
         .justify_center()
         .rounded(radius::S)
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(color::HOVER)))
-        .child(icon(Icon::Close, px(12.), color::TEXT_MUTED))
+        .hover(|s| s.bg(rgb(palette().hover)))
+        .child(icon(Icon::Close, px(12.), palette().text_muted))
 }
 
 /// A note: an accent bar, its text, when it was written and a delete button.
@@ -362,7 +362,7 @@ fn note_view(n: &NoteRow, cx: &mut Context<AppView>) -> Div {
         .pl(space::M)
         .py(px(2.))
         .border_l_2()
-        .border_color(rgb(color::ACCENT))
+        .border_color(rgb(palette().accent))
         .child(
             div()
                 .flex_1()
@@ -395,7 +395,7 @@ fn facts_row(facts: &[Line]) -> Div {
         .flex_wrap()
         .items_center()
         .gap_x(px(6.))
-        .text_color(rgb(color::TEXT_SECONDARY))
+        .text_color(rgb(palette().text_secondary))
         .children(facts.iter().enumerate().flat_map(|(i, f)| {
             let dot = (i > 0).then(|| div().text_size(text::META).child("·"));
             dot.into_iter().chain(std::iter::once(fact_line(f)))
@@ -411,7 +411,7 @@ fn doing_view(doing: &Doing) -> Div {
             .child(
                 div()
                     .text_size(text::BODY)
-                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .text_color(rgb(palette().text_secondary))
                     .child(title),
             )
             .child(label(why))
@@ -472,7 +472,7 @@ pub fn card_view(
                             .h(px(26.))
                             .px(space::S)
                             .text_size(text::META)
-                            .child(icon(Icon::Plus, px(12.), color::TEXT))
+                            .child(icon(Icon::Plus, px(12.), palette().text))
                             .child("Add note")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.start_note(window, cx);
@@ -497,7 +497,7 @@ pub fn card_view(
                 div()
                     .pt(space::M)
                     .border_t_1()
-                    .border_color(rgb(color::BORDER))
+                    .border_color(rgb(palette().border))
                     .flex()
                     .items_center()
                     .gap(space::S)
@@ -511,14 +511,14 @@ pub fn card_view(
                         d.child(
                             div()
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(color::TEXT))
+                                .text_color(rgb(palette().text))
                                 .child(t),
                         )
                     })
                     .child(
                         div()
                             .debug_selector(|| "work-session".to_owned())
-                            .text_color(rgb(color::TEXT_SECONDARY))
+                            .text_color(rgb(palette().text_secondary))
                             .child(s.brief()),
                     )
                     .when(s.ongoing(), |d| d.child(pill(Tone::Good, "ongoing"))),
@@ -555,7 +555,7 @@ fn session_title(s: &SessionRow, cx: &mut Context<AppView>) -> Stateful<Div> {
         .items_center()
         .rounded(radius::S)
         .cursor_text()
-        .hover(|s| s.bg(rgb(color::HOVER)))
+        .hover(|s| s.bg(rgb(palette().hover)))
         .text_size(text::SECTION)
         .font_weight(FontWeight::SEMIBOLD)
         .whitespace_nowrap()
@@ -563,7 +563,7 @@ fn session_title(s: &SessionRow, cx: &mut Context<AppView>) -> Stateful<Div> {
         .text_ellipsis()
         .when(s.title.is_none(), |d| {
             d.font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(color::TEXT_MUTED))
+                .text_color(rgb(palette().text_muted))
         })
         .child(shown)
         .on_click(cx.listener(move |this, _, window, cx| {
@@ -602,7 +602,7 @@ fn session_card(
                     div()
                         .flex_shrink_0()
                         .text_size(text::META)
-                        .text_color(rgb(color::TEXT_SECONDARY))
+                        .text_color(rgb(palette().text_secondary))
                         .child(s.span()),
                 )
                 .when_some(s.duration.clone(), |d, t| {
@@ -621,7 +621,7 @@ fn session_card(
                             .flex()
                             .items_center()
                             .flex_shrink_0()
-                            .text_color(rgb(color::TEXT))
+                            .text_color(rgb(palette().text))
                             .children(inline(r, text::BODY))
                     })),
             ))
@@ -665,7 +665,7 @@ pub fn sessions_view(
             .child(
                 div()
                     .text_size(text::BODY)
-                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .text_color(rgb(palette().text_secondary))
                     .child("No work sessions yet"),
             )
             .child(label(

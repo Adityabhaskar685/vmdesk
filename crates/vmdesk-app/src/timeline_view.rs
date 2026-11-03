@@ -9,7 +9,7 @@ use vmdesk_core::human::day;
 use vmdesk_db::{Category, EventKey, Line, Span, TimelineEntry, text_of};
 
 use crate::kit::{Button, button, label};
-use crate::theme::{MONO, color, radius, space, text, tint, tone_color};
+use crate::theme::{MONO, palette, radius, space, text, tint, tone_color};
 use crate::ui::AppView;
 
 /// Events the tab holds when it opens on the newest.
@@ -163,12 +163,12 @@ impl TimelineSlice {
 
 fn category_color(c: Category) -> u32 {
     match c {
-        Category::Process => color::BLUE,
-        Category::Container => color::TEAL,
-        Category::Tmux => color::PURPLE,
-        Category::Git => color::ORANGE,
-        Category::Network => color::PINK,
-        Category::Status | Category::Gap | Category::Other => color::GREY,
+        Category::Process => palette().blue,
+        Category::Container => palette().teal,
+        Category::Tmux => palette().purple,
+        Category::Git => palette().orange,
+        Category::Network => palette().pink,
+        Category::Status | Category::Gap | Category::Other => palette().grey,
     }
 }
 
@@ -319,7 +319,7 @@ pub fn pinned(day: &str) -> Div {
         .right_0()
         .px(space::XL)
         .pt(space::XS)
-        .bg(rgb(color::BG))
+        .bg(rgb(palette().bg))
         .child(day_header(day, true))
 }
 
@@ -340,7 +340,7 @@ pub fn render(
             .child(
                 div()
                     .text_size(text::BODY)
-                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .text_color(rgb(palette().text_secondary))
                     .child("No events yet"),
             )
             .child(label("They appear as snapshots change."));
@@ -406,13 +406,13 @@ pub fn banner(window: &TimelineWindow, cx: &mut Context<AppView>) -> Option<Div>
             .items_center()
             .gap(space::M)
             .border_b_1()
-            .border_color(rgb(color::BORDER))
-            .bg(tint(color::ACCENT))
+            .border_color(rgb(palette().border))
+            .bg(tint(palette().accent))
             .child(
                 div()
                     .flex_1()
                     .text_size(text::META)
-                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .text_color(rgb(palette().text_secondary))
                     .child(format!("Events around the search hit from {when}")),
             )
             .child(
@@ -439,10 +439,10 @@ pub fn day_header(day: &str, first: bool) -> Div {
             div()
                 .text_size(text::META)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(color::TEXT_SECONDARY))
+                .text_color(rgb(palette().text_secondary))
                 .child(day.to_owned()),
         )
-        .child(div().flex_1().h(px(1.)).bg(rgb(color::BORDER)))
+        .child(div().flex_1().h(px(1.)).bg(rgb(palette().border)))
 }
 
 pub fn spans(line: &[Span]) -> impl Iterator<Item = Div> + '_ {
@@ -482,9 +482,9 @@ pub fn marker(r: &Row) -> Div {
                 .bottom_0()
                 .left(px(7.5))
                 .w(px(1.))
-                .bg(rgb(color::BORDER)),
+                .bg(rgb(palette().border)),
         )
-        .child(dot.bg(rgb(if r.ended { color::BG } else { r.color })))
+        .child(dot.bg(rgb(if r.ended { palette().bg } else { r.color })))
 }
 
 /// The event's local time, in the first column of a row.
@@ -493,7 +493,7 @@ pub fn time_cell(r: &Row) -> Div {
         .w(px(38.))
         .flex_shrink_0()
         .text_size(text::META)
-        .text_color(rgb(color::TEXT_MUTED))
+        .text_color(rgb(palette().text_muted))
         .child(r.at.format("%H:%M").to_string())
 }
 
@@ -513,7 +513,7 @@ pub fn sentence(r: &Row) -> Div {
                 .flex()
                 .items_center()
                 .text_size(text::BODY)
-                .text_color(rgb(color::TEXT))
+                .text_color(rgb(palette().text))
                 .children(spans(&r.title)),
         )
         .when(r.count > 1, |d| {
@@ -522,9 +522,9 @@ pub fn sentence(r: &Row) -> Div {
                     .flex_shrink_0()
                     .px(px(6.))
                     .rounded_full()
-                    .bg(rgb(color::HOVER))
+                    .bg(rgb(palette().hover))
                     .text_size(text::SMALL)
-                    .text_color(rgb(color::TEXT_SECONDARY))
+                    .text_color(rgb(palette().text_secondary))
                     .child(format!("×{}", r.count)),
             )
         })
@@ -537,7 +537,7 @@ pub fn sentence(r: &Row) -> Div {
                     .flex()
                     .items_center()
                     .text_size(text::META)
-                    .text_color(rgb(color::TEXT_MUTED))
+                    .text_color(rgb(palette().text_muted))
                     .children(spans(detail)),
             )
         })
@@ -560,7 +560,7 @@ fn row_view(r: &Row, marked: bool) -> Div {
             div()
                 .flex_shrink_0()
                 .text_size(text::SMALL)
-                .text_color(rgb(color::TEXT_MUTED))
+                .text_color(rgb(palette().text_muted))
                 .child(r.source.clone()),
         );
     if !marked {
@@ -571,7 +571,7 @@ fn row_view(r: &Row, marked: bool) -> Div {
         .mx(px(-8.))
         .px(space::S)
         .rounded(radius::M)
-        .bg(tint(color::ACCENT))
+        .bg(tint(palette().accent))
         .child(row)
 }
 
@@ -638,7 +638,7 @@ mod tests {
             ]
         );
         assert_eq!(days[0].rows[0].source, "agent");
-        assert_eq!(days[0].rows[0].color, color::BLUE);
+        assert_eq!(days[0].rows[0].color, palette().blue);
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
             now,
             change("timeout", "ok"),
         ));
-        assert_eq!((lost.color, back.color), (color::AMBER, color::GREEN));
+        assert_eq!((lost.color, back.color), (palette().amber, palette().green));
     }
 
     #[test]
