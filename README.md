@@ -91,19 +91,25 @@ target/release/vmdesk-app            # or: cargo run --release -p vmdesk-app
 target/release/vmdesk-app build-01   # open with a VM selected (name, alias or id)
 ```
 
-The list on the left shows every VM with a status dot (green online, amber SSH failing, red no
-route, grey not checked), the interface that reaches it, and what you were doing there. Type to
-filter the list, use ↑/↓ to move, and press Esc to clear the filter. Ctrl+Shift+B, or the
-sidebar button, hides the list and gives the selected VM the whole window.
+The list on the left groups the VMs into **Online**, **Needs attention** and **Offline**, each
+with a status dot and one line: what you were doing there, or why it cannot be reached. Type to
+filter the list, use ↑/↓ to move, and press Esc to clear the filter. **+** adds a VM.
+Ctrl+Shift+B, or the button at the top left, folds the list into a rail of initials.
 
-The selected VM has a status pill (`Online + agent`, `SSH failing`, and so on), the agent's state
-(with why its last sync failed, when it did; `vmdesk status` and `vmdesk agent status` say it
-too), and four tabs:
+The bar at the top holds a tab per open machine: the selected one, and every machine whose
+shells are running. Shells keep running while you look at another machine, and its tab brings
+them back; the tab's × closes them. Beside the tabs are the views of the selected machine, then
+**Search events** and the theme picker.
 
-- **Overview** starts with **Current work**: the command or tmux session you were using, its repo
-  and branch with uncommitted changes, and since when. Your newest note on the session sits above
-  it. **Add note** pins a note to the latest session. Cards for the system, tmux sessions,
-  containers, listening ports, repos and processes follow.
+The selected VM has its name and a status pill (`Online + agent`, `SSH failing`, and so on),
+one line with its login, path, SSH result and the agent's state (with why its last sync failed,
+when it did; `vmdesk status` and `vmdesk agent status` say it too), and four views:
+
+- **Overview** starts with **You were working on**: the command or tmux session you were using,
+  its repo and branch with uncommitted changes, and since when. Your newest note on the session
+  sits above it. **Add note** pins a note to the latest session. Tiles for uptime, load, memory
+  and each disk follow, then what runs there (tmux sessions and containers) beside the latest
+  activity, then the listening ports, repos and processes.
 - **Sessions** lists stretches of activity, newest first, with the repos and commands in each.
   Click a title to rename the session.
 - **Timeline** tells each event as a sentence under a day header, with its source (`agent`,
@@ -119,7 +125,9 @@ too), and four tabs:
   **×** beside a tab (or Ctrl+Shift+W) closes it, and closing the last one leaves the Terminal
   tab. Ctrl+Shift+M, or the corner button on the strip, makes the terminal fill the window and
   hides the machine list and header until you restore it. Shells keep running while you look at
-  another tab, and close when you switch machines.
+  another view or machine. The inspector on the right (Ctrl+Shift+I, or the strip's panel
+  button) shows the machine's state beside its shells: what you were working on, load, memory,
+  the fullest disk and what runs there.
   Each shell is a card that can be split: Ctrl+Shift+D (or the card's split button) opens a
   shell to its right, Ctrl+Shift+E one below it. The focused card shows its buttons; the others
   show them on hover. Ctrl+Shift+Z, or the card's zoom button, shows one shell alone over the tab

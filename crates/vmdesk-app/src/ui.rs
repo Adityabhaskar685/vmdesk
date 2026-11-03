@@ -282,6 +282,8 @@ pub struct AppView {
     menu_open: bool,
     /// Whether the machine list is shown beside the selected VM.
     show_machines: bool,
+    /// The machine's state beside its shells in the Terminal view.
+    show_inspector: bool,
     /// The selected VM's shells while the Terminal tab is open. Dropping a view closes
     /// its pty.
     terminal: Option<TerminalPane>,
@@ -317,6 +319,7 @@ impl AppView {
             confirm: None,
             menu_open: false,
             show_machines: true,
+            show_inspector: true,
             terminal: None,
             parked: HashMap::new(),
             key_prompt: None,
@@ -937,6 +940,10 @@ impl AppView {
         let terminal = self.tab == Tab::Terminal;
         match key {
             "b" => self.toggle_machines(cx),
+            "i" if terminal => {
+                self.show_inspector = !self.show_inspector;
+                cx.notify();
+            }
             "p" => self.open_themes(window, cx),
             "t" if terminal => self.add_terminal_tab(window, cx),
             "m" if terminal => self.toggle_terminal_max(cx),
@@ -1983,12 +1990,23 @@ impl AppView {
                 None => Self::render_terminal_node(root, focused, cx),
             });
         }
+        let body = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .gap(px(6.))
+            .pr(px(6.))
+            .pb(px(6.))
+            .child(body)
+            .when(self.show_inspector && !pane.maximized, |d| {
+                d.child(div().pt(px(6.)).flex().child(self.inspector(cx)))
+            });
         div()
             .size_full()
             .flex()
             .flex_col()
             .min_h_0()
-            .child(Self::terminal_strip(pane, cx))
+            .child(Self::terminal_strip(pane, self.show_inspector, cx))
             .child(body)
             .into_any_element()
     }
@@ -2187,7 +2205,7 @@ impl AppView {
     }
 
     /// The shells' tabs, the new-shell button and the maximize toggle.
-    fn terminal_strip(pane: &TerminalPane, cx: &mut Context<Self>) -> gpui::Div {
+    fn terminal_strip(pane: &TerminalPane, inspector: bool, cx: &mut Context<Self>) -> gpui::Div {
         div()
             .flex_shrink_0()
             .flex()
@@ -2260,6 +2278,14 @@ impl AppView {
                                     })),
                             )
                     })),
+            )
+            .child(
+                icon_button("terminal-inspector", Icon::Sidebar, inspector).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.show_inspector = !this.show_inspector;
+                        cx.notify();
+                    },
+                )),
             )
             .child(
                 icon_button("terminal-new", Icon::Plus, false)
@@ -2719,6 +2745,9 @@ impl Render for AppView {
 
 #[path = "shell.rs"]
 mod shell;
+
+#[path = "inspector.rs"]
+mod inspector;
 
 #[cfg(test)]
 #[path = "ui_tests.rs"]

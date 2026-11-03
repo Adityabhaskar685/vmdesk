@@ -1426,6 +1426,28 @@ fn shells_keep_running_on_their_machine_while_another_is_selected(cx: &mut TestA
 }
 
 #[gpui::test]
+fn the_inspector_sits_beside_the_shells_and_folds_away(cx: &mut TestAppContext) {
+    let env = env();
+    seed_vm(&env, AgentState::Unknown, None);
+    let (view, cx) = open_lab(cx, &env);
+
+    click(cx, "terminal");
+    wait(cx, &view, "the shell", |v| v.terminal.is_some());
+    assert!(
+        shown(cx, "inspector"),
+        "the machine's state shows beside its shells"
+    );
+
+    click(cx, "terminal-inspector");
+    wait(cx, &view, "the inspector to fold", |v| !v.show_inspector);
+    assert!(!shown(cx, "inspector"));
+
+    cx.simulate_keystrokes("ctrl-shift-i");
+    wait(cx, &view, "the inspector back", |v| v.show_inspector);
+    assert!(shown(cx, "inspector"));
+}
+
+#[gpui::test]
 fn the_machine_list_hides_and_shows(cx: &mut TestAppContext) {
     let env = env();
     seed_vm(&env, AgentState::Unknown, None);
