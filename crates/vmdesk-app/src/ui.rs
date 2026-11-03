@@ -29,16 +29,15 @@ use crate::theme::{
 };
 use crate::theme_view::ThemePicker;
 use crate::timeline_view::{HIGHLIGHT, TimelineWindow};
-use crate::work_view::{card_view, present_sessions, present_work, sessions_view, sidebar_line};
+use crate::work_view::{card_view, present_sessions, present_work, sessions_view};
 
 /// How often the list re-reads the database (the monitor writes status there).
 const RELOAD: Duration = Duration::from_secs(5);
 /// The selected VM is re-collected this often while it is open (spec section 9).
 const OPEN_VM_INTERVAL: Duration = Duration::from_mins(2);
-const SIDEBAR_WIDTH: f32 = 280.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Tab {
+pub(crate) enum Tab {
     Overview,
     Sessions,
     Timeline,
@@ -429,7 +428,7 @@ impl AppView {
     }
 
     /// Selects a tab, opening a shell the first time the Terminal tab is shown.
-    fn select_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
         self.tab = tab;
         self.inline = None;
         if tab == Tab::Terminal {
@@ -1602,136 +1601,6 @@ fn key_panel(p: &KeyProblem, cx: &mut Context<AppView>) -> gpui::Div {
 }
 
 impl AppView {
-    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let vms = self.visible();
-        let online = self
-            .vms
-            .iter()
-            .filter(|v| self.headline(v) == Some(Headline::Online))
-            .count();
-        let none_match = vms.is_empty() && !self.vms.is_empty();
-        div()
-            .w(px(SIDEBAR_WIDTH))
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(palette().surface))
-            .border_r_1()
-            .border_color(rgb(palette().border))
-            .child(
-                div()
-                    .px(space::L)
-                    .pt(space::L)
-                    .pb(space::M)
-                    .flex()
-                    .flex_col()
-                    .gap(space::M)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(text::SECTION)
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("Machines"),
-                                    )
-                                    .child(label(format!(
-                                        "{online} online · {} VMs",
-                                        self.vms.len()
-                                    ))),
-                            )
-                            .child(
-                                button(Button::Secondary, "add-vm")
-                                    .px(space::S)
-                                    .child(icon(Icon::Plus, px(14.), palette().text))
-                                    .child("Add VM")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_add_form(window, cx);
-                                    })),
-                            )
-                            .child(self.themes_button(cx))
-                            .child(self.machines_button("toggle-machines-sidebar", cx)),
-                    )
-                    .child(self.filter_input(cx)),
-            )
-            .child(
-                div()
-                    .id("vm-list")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .px(space::S)
-                    .pb(space::S)
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .when(none_match, |d| {
-                        d.child(
-                            div()
-                                .pt(space::L)
-                                .flex()
-                                .justify_center()
-                                .child(label(format!("No machines match “{}”", self.filter))),
-                        )
-                    })
-                    .children(vms.into_iter().map(|vm| self.list_row(vm, cx))),
-            )
-            .child(self.search_entry(cx))
-    }
-
-    /// The way into the event search, at the foot of the list.
-    fn search_entry(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let open = self.search.is_some();
-        div()
-            .p(space::S)
-            .border_t_1()
-            .border_color(rgb(palette().border))
-            .child(
-                div()
-                    .id("open-search")
-                    .debug_selector(|| "open-search".to_owned())
-                    .h(CONTROL_HEIGHT)
-                    .px(space::S)
-                    .flex()
-                    .items_center()
-                    .gap(space::S)
-                    .rounded(radius::M)
-                    .cursor_pointer()
-                    .text_size(text::BODY)
-                    .text_color(rgb(if open {
-                        palette().text
-                    } else {
-                        palette().text_secondary
-                    }))
-                    .when(open, |d| d.bg(tint(palette().accent)))
-                    .when(!open, |d| d.hover(|s| s.bg(rgb(palette().hover))))
-                    .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx)))
-                    .child(icon(Icon::Search, px(14.), palette().text_muted))
-                    .child(div().flex_1().child("Search events"))
-                    .child(
-                        div()
-                            .px(px(6.))
-                            .h(px(18.))
-                            .flex()
-                            .items_center()
-                            .rounded(radius::S)
-                            .border_1()
-                            .border_color(rgb(palette().border_strong))
-                            .text_size(text::SMALL)
-                            .text_color(rgb(palette().text_muted))
-                            .child("Ctrl K"),
-                    ),
-            )
-    }
-
     /// The filter as an input. Typing anywhere in the window edits it.
     fn filter_input(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let active = !self.filter.is_empty();
@@ -1800,60 +1669,100 @@ impl AppView {
     fn list_row(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let id = vm.id;
         let selected = self.selected == Some(id);
-        let sub = match self.status.get(&vm.id) {
-            Some(s) => match &s.route {
-                Some(r) => format!("{} · {r}", s.label(vm.lifecycle)),
-                None => s.label(vm.lifecycle),
-            },
-            None => "never checked".to_owned(),
+        let status = self.status.get(&id);
+        let label_text =
+            status.map_or_else(|| "never checked".to_owned(), |s| s.label(vm.lifecycle));
+        let headline = self.headline(vm);
+        let agent = status.is_some_and(|s| s.agent.collects());
+        // One line of context: what you were doing there, else why it is not reachable,
+        // else how it is reached.
+        let context = match (self.work.get(&id), shell::Group::of(headline), status) {
+            (Some(line), _, _) => line.clone(),
+            (None, shell::Group::Attention | shell::Group::Offline, Some(s)) => {
+                sentence_case(ssh_fact(s.ssh))
+            }
+            (None, _, Some(s)) => s
+                .route
+                .as_ref()
+                .map_or_else(|| "idle".to_owned(), |r| format!("via {r}")),
+            (None, _, None) => "not checked yet".to_owned(),
+        };
+        let tone = headline_tone(headline);
+        let context_color = match shell::Group::of(headline) {
+            shell::Group::Attention | shell::Group::Offline => tone_color(tone),
+            _ if selected => palette().text_secondary,
+            _ => palette().text_muted,
+        };
+        let row_label = match status.and_then(|s| s.route.clone()) {
+            Some(r) => format!("{label_text} · {r}"),
+            None => label_text,
         };
         div()
             .id(SharedString::from(vm.id.to_string()))
+            .debug_selector(move || format!("{}: {row_label}", vm.name))
             .px(space::S)
-            .py(px(7.))
+            .py(px(8.))
             .flex()
             .gap(px(10.))
             .items_start()
-            .rounded(radius::M)
+            .rounded(radius::L)
             .cursor_pointer()
-            .when(selected, |d| d.bg(tint(palette().accent)))
-            .when(!selected, |d| d.hover(|s| s.bg(rgb(palette().hover))))
+            .when(selected, |d| d.bg(rgb(palette().hover)))
+            .when(!selected, |d| d.hover(|s| s.bg(tint(palette().hover))))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.close_search(window, cx);
                 this.select(id, cx);
             }))
-            .child(dot(tone_color(headline_tone(self.headline(vm))), 8.).mt(px(6.)))
+            .child(dot(tone_color(tone), 8.).mt(px(6.)))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
+                    .gap(px(2.))
                     .child(
                         div()
-                            .text_size(text::BODY)
-                            .font_weight(if selected {
-                                FontWeight::SEMIBOLD
-                            } else {
-                                FontWeight::MEDIUM
-                            })
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(vm.name.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_size(text::BODY)
+                                    .font_weight(if selected {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(vm.name.clone()),
+                            )
+                            .when(agent, |d| {
+                                d.child(
+                                    div()
+                                        .text_size(text::SMALL)
+                                        .text_color(rgb(palette().accent))
+                                        .child("agent"),
+                                )
+                            }),
                     )
                     .child(
-                        label(sub.clone())
+                        div()
+                            .text_size(text::META)
+                            .text_color(rgb(context_color))
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .when(selected, |d| d.text_color(rgb(palette().text_secondary)))
-                            .debug_selector(|| format!("{}: {sub}", vm.name)),
-                    )
-                    .when_some(self.work.get(&id), |d, line| {
-                        d.child(sidebar_line(&vm.name, line))
-                    }),
+                            .child(context.clone())
+                            .when_some(self.work.get(&id), |d, line| {
+                                let name = vm.name.clone();
+                                let line = line.clone();
+                                d.debug_selector(move || format!("{name} work: {line}"))
+                            }),
+                    ),
             )
     }
 
@@ -2310,7 +2219,7 @@ impl AppView {
                     .gap(space::L)
                     .child(card_view(&work, adding, cx))
                     .when_some(d.snapshot.as_ref(), |el, s| {
-                        el.child(crate::overview::render(s))
+                        el.child(crate::overview::render(s, &d.timeline.events, cx))
                     })
                     .into_any_element()
             }
@@ -2365,58 +2274,6 @@ impl AppView {
         }
     }
 
-    fn status_strip(&self, vm: &Vm) -> gpui::Div {
-        let status = self.status.get(&vm.id);
-        let headline = status.map(|s| s.label(vm.lifecycle));
-        let facts = status.map(|s| {
-            let mut facts = vec![ssh_fact(s.ssh).to_owned()];
-            facts.extend(s.route.as_ref().map(|r| format!("via {r}")));
-            facts.push(format!(
-                "checked {} ago",
-                ago((Utc::now() - s.checked_at).num_seconds())
-            ));
-            facts.join(" · ")
-        });
-        let agent = self.agent_view(vm.id);
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(space::M)
-            .child(
-                pill(
-                    headline_tone(status.map(|s| s.headline(vm.lifecycle))),
-                    headline
-                        .as_deref()
-                        .map_or_else(|| "Never checked".to_owned(), sentence_case),
-                )
-                .debug_selector(|| format!("headline: {}", headline.clone().unwrap_or_default())),
-            )
-            .when_some(facts, |d, f| {
-                d.child(
-                    div()
-                        .text_size(text::META)
-                        .text_color(rgb(palette().text_secondary))
-                        .child(f),
-                )
-            })
-            .when_some(agent, |d, agent| {
-                let text = agent.text(Utc::now());
-                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(palette().border_strong)))
-                    .child(
-                        div()
-                            .debug_selector(|| format!("agent: {text}"))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .text_size(text::META)
-                            .text_color(rgb(palette().text_secondary))
-                            .child(dot(tone_color(agent.tone()), 6.))
-                            .child(text.clone()),
-                    )
-            })
-    }
-
     fn more_menu(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
         let id = vm.id;
         let agent_action = self.agent_view(id).map(|a| a.action());
@@ -2457,6 +2314,12 @@ impl AppView {
                             menu()
                                 .debug_selector(|| "menu".to_owned())
                                 .occlude()
+                                .child(menu_action("check", "Check now", false).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.menu_open = false;
+                                        this.check(id, cx);
+                                    }),
+                                ))
                                 .child(menu_action("edit", "Edit VM…", false).on_click(
                                     cx.listener(move |this, _, window, cx| {
                                         this.menu_open = false;
@@ -2491,14 +2354,49 @@ impl AppView {
             })
     }
 
+    /// The machine's name, state and actions, over one quiet line of facts.
     fn title_row(&self, vm: &Vm, cx: &mut Context<Self>) -> gpui::Div {
         let id = vm.id;
-        let ep = vm
+        let status = self.status.get(&id);
+        let headline = status.map(|s| s.label(vm.lifecycle));
+        let login = vm
             .endpoints
             .first()
             .map(|e| format!("{}@{}:{}", vm.username, e.address, e.port))
             .unwrap_or_default();
+        let mut facts = vec![self.path_text(vm)];
+        if let Some(s) = status {
+            facts.push(ssh_fact(s.ssh).to_owned());
+            facts.extend(s.route.as_ref().map(|r| format!("via {r}")));
+            facts.push(format!(
+                "checked {} ago",
+                ago((Utc::now() - s.checked_at).num_seconds())
+            ));
+        }
+        let agent = self.agent_view(id);
         let busy = self.busy.map(|b| format!("{}…", sentence_case(b)));
+        let meta = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.))
+            .text_size(text::META)
+            .text_color(rgb(palette().text_muted))
+            .child(div().font_family(MONO).child(login))
+            .children(facts.into_iter().map(|f| div().child(format!("· {f}"))))
+            .when_some(agent, |d, agent| {
+                let text = agent.text(Utc::now());
+                d.child(
+                    div()
+                        .debug_selector(|| format!("agent: {text}"))
+                        .ml(px(4.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(dot(tone_color(agent.tone()), 6.))
+                        .child(text.clone()),
+                )
+            });
         div()
             .flex()
             .items_center()
@@ -2509,34 +2407,37 @@ impl AppView {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .text_size(text::TITLE)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(vm.name.clone()),
-                    )
+                    .gap(px(6.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
-                            .text_size(text::META)
-                            .text_color(rgb(palette().text_muted))
-                            .child(div().font_family(MONO).child(ep))
-                            .child("·")
-                            .child(self.path_text(vm)),
-                    ),
+                            .gap(space::M)
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_size(px(24.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(vm.name.clone()),
+                            )
+                            .child(
+                                pill(
+                                    headline_tone(status.map(|s| s.headline(vm.lifecycle))),
+                                    headline
+                                        .as_deref()
+                                        .map_or_else(|| "Never checked".to_owned(), sentence_case),
+                                )
+                                .debug_selector(|| {
+                                    format!("headline: {}", headline.clone().unwrap_or_default())
+                                }),
+                            ),
+                    )
+                    .child(meta),
             )
             .when_some(busy, |d, b| d.child(label(b)))
-            .child(
-                button(Button::Secondary, "check")
-                    .child("Check")
-                    .on_click(cx.listener(move |this, _, _, cx| this.check(id, cx))),
-            )
             .child(
                 button(Button::Secondary, "collect")
                     .child("Refresh")
@@ -2558,14 +2459,12 @@ impl AppView {
         let status = self.status.get(&id);
         div()
             .px(space::XL)
-            .pt(space::L)
-            .border_b_1()
-            .border_color(rgb(palette().border))
+            .pt(space::XL)
+            .pb(space::L)
             .flex()
             .flex_col()
-            .gap(space::M)
+            .gap(space::L)
             .child(self.title_row(vm, cx))
-            .child(self.status_strip(vm))
             .when_some(status.and_then(|s| s.detail.clone()), |d, detail| {
                 d.child(
                     div()
@@ -2622,20 +2521,28 @@ impl AppView {
                 },
             )
             .when_some(self.key_prompt.clone(), |d, p| d.child(key_panel(&p, cx)))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(self.tab_button("tab-overview", "Overview", Tab::Overview, cx))
-                    .child(self.tab_button("tab-sessions", "Sessions", Tab::Sessions, cx))
-                    .child(self.tab_button("tab-timeline", "Timeline", Tab::Timeline, cx))
-                    // The Terminal tab exists only while a shell does; Open terminal
-                    // creates it.
-                    .when(self.terminal.is_some(), |d| {
-                        d.child(self.tab_button("tab-terminal", "Terminal", Tab::Terminal, cx))
-                    }),
-            )
+    }
+
+    /// Overview · Sessions · Timeline (· Terminal), for the top bar.
+    pub(super) fn view_switch(&self, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .p(px(3.))
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .self_start()
+            .rounded(radius::L)
+            .bg(rgb(palette().bg))
+            .border_1()
+            .border_color(rgb(palette().border))
+            .child(self.tab_button("tab-overview", "Overview", Tab::Overview, cx))
+            .child(self.tab_button("tab-sessions", "Sessions", Tab::Sessions, cx))
+            .child(self.tab_button("tab-timeline", "Timeline", Tab::Timeline, cx))
+            // The Terminal tab exists only while a shell does; Open terminal
+            // creates it.
+            .when(self.terminal.is_some(), |d| {
+                d.child(self.tab_button("tab-terminal", "Terminal", Tab::Terminal, cx))
+            })
     }
 
     fn tab_button(
@@ -2649,8 +2556,8 @@ impl AppView {
         div()
             .id(id)
             .debug_selector(|| id.to_owned())
-            .h(px(30.))
-            .px(px(12.))
+            .h(px(28.))
+            .px(px(14.))
             .flex()
             .items_center()
             .rounded(radius::M)
@@ -2662,7 +2569,7 @@ impl AppView {
             } else {
                 palette().text_secondary
             }))
-            .when(active, |d| d.bg(rgb(palette().elevated)))
+            .when(active, |d| d.bg(rgb(palette().hover)))
             .when(!active, |d| {
                 d.hover(|s| s.bg(rgb(palette().hover)).text_color(rgb(palette().text)))
             })
@@ -2683,6 +2590,7 @@ impl Render for AppView {
             Some(vm) => format!("VMDesk — {}", vm.name),
             None => "VMDesk".to_owned(),
         };
+        window.set_window_title(&title);
         let maximized =
             self.tab == Tab::Terminal && self.terminal.as_ref().is_some_and(|pane| pane.maximized);
         let workspace = if maximized {
@@ -2697,7 +2605,11 @@ impl Render for AppView {
                 .flex_1()
                 .min_h_0()
                 .flex()
-                .when(self.show_machines, |d| d.child(self.render_list(cx)))
+                .child(if self.show_machines {
+                    self.sidebar(cx)
+                } else {
+                    self.rail(cx)
+                })
                 .child(self.render_detail(cx))
                 .into_any_element()
         };
@@ -2712,11 +2624,7 @@ impl Render for AppView {
             .text_color(rgb(palette().text))
             .font_family(SANS)
             .text_size(text::BODY)
-            .children(crate::chrome::title_bar(
-                window,
-                title,
-                Some(self.machines_button("toggle-machines-title", cx)),
-            ))
+            .child(self.top_bar(window, cx))
             .child(workspace)
             .when(self.menu_open, |d| {
                 d.child(backdrop(
@@ -2730,6 +2638,9 @@ impl Render for AppView {
         crate::chrome::frame(window, body.into_any_element())
     }
 }
+
+#[path = "shell.rs"]
+mod shell;
 
 #[cfg(test)]
 #[path = "ui_tests.rs"]

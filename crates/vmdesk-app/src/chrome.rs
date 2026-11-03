@@ -12,7 +12,7 @@ use crate::theme::{palette, text};
 
 /// Width of the strip along each window edge that resizes the window.
 const EDGE: Pixels = px(6.);
-const TITLE_HEIGHT: Pixels = px(40.);
+const TITLE_HEIGHT: Pixels = px(44.);
 
 /// Which edge or corner `pos` is on, if any.
 fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
@@ -109,70 +109,67 @@ fn control(id: &'static str, glyph: Icon, close: bool) -> gpui::Stateful<gpui::D
         .child(icon(glyph, px(14.), palette().text_secondary))
 }
 
-/// The title bar, or nothing when the compositor draws one. `leading` sits before the
-/// title, for buttons such as the sidebar toggle.
-pub fn title_bar(
-    window: &Window,
-    title: String,
-    leading: Option<AnyElement>,
-) -> Option<AnyElement> {
-    if !client_decorated(window) {
-        return None;
-    }
+/// The bar across the top of the window, between `leading` and `trailing`. Where the app
+/// draws its own frame (GNOME on Wayland), the space between them moves the window and the
+/// window buttons follow `trailing`; otherwise the compositor's title bar does both.
+pub fn top_bar(window: &Window, leading: AnyElement, trailing: AnyElement) -> AnyElement {
+    let decorated = client_decorated(window);
     let maximized = window.is_maximized();
-    Some(
-        div()
-            .h(TITLE_HEIGHT)
-            .w_full()
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .bg(rgb(palette().surface))
-            .border_b_1()
-            .border_color(rgb(palette().border))
-            .px(px(8.))
-            .children(leading)
-            .child(
-                div()
-                    .id("title-drag")
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .px_3()
-                    .text_size(text::BODY)
-                    .text_color(rgb(palette().text_secondary))
-                    .child(title)
-                    .on_mouse_down(MouseButton::Left, |e, window, _| {
-                        if e.click_count >= 2 {
-                            window.zoom_window();
-                        } else {
-                            window.start_window_move();
-                        }
-                    })
-                    .on_mouse_down(MouseButton::Right, |e, window, _| {
-                        window.show_window_menu(e.position);
-                    }),
-            )
-            .child(
-                control("win-minimize", Icon::WinMinimize, false)
-                    .on_click(|_, window, _| window.minimize_window()),
-            )
-            .child(
-                control(
-                    "win-maximize",
-                    if maximized {
-                        Icon::WinRestore
-                    } else {
-                        Icon::WinMaximize
-                    },
-                    false,
+    let drag = div()
+        .id("title-drag")
+        .flex_1()
+        .h_full()
+        .when(decorated, |d| {
+            d.on_mouse_down(MouseButton::Left, |e, window, _| {
+                if e.click_count >= 2 {
+                    window.zoom_window();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .on_mouse_down(MouseButton::Right, |e, window, _| {
+                window.show_window_menu(e.position);
+            })
+        });
+    div()
+        .h(TITLE_HEIGHT)
+        .w_full()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .bg(rgb(palette().surface))
+        .border_b_1()
+        .border_color(rgb(palette().border))
+        .pl(px(8.))
+        .when(!decorated, |d| d.pr(px(8.)))
+        .child(leading)
+        .child(drag)
+        .child(trailing)
+        .when(decorated, |d| {
+            d.child(div().w(px(4.)))
+                .child(
+                    control("win-minimize", Icon::WinMinimize, false)
+                        .on_click(|_, window, _| window.minimize_window()),
                 )
-                .on_click(|_, window, _| window.zoom_window()),
-            )
-            .child(control("win-close", Icon::Close, true).on_click(|_, _, cx: &mut App| cx.quit()))
-            .into_any_element(),
-    )
+                .child(
+                    control(
+                        "win-maximize",
+                        if maximized {
+                            Icon::WinRestore
+                        } else {
+                            Icon::WinMaximize
+                        },
+                        false,
+                    )
+                    .on_click(|_, window, _| window.zoom_window()),
+                )
+                .child(
+                    control("win-close", Icon::Close, true)
+                        .on_click(|_, _, cx: &mut App| cx.quit()),
+                )
+        })
+        .into_any_element()
 }
 
 #[cfg(test)]

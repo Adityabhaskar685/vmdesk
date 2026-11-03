@@ -1171,22 +1171,23 @@ fn the_terminal_maximizes_and_restores(cx: &mut TestAppContext) {
 
     click(cx, "terminal");
     wait(cx, &view, "the shell", |v| v.terminal.is_some());
-    assert!(shown(cx, "tab-overview"), "the header is shown normally");
+    assert!(shown(cx, "collect"), "the machine header is shown normally");
 
     click(cx, "terminal-max");
     wait(cx, &view, "the maximized pane", |v| {
         v.terminal.as_ref().is_some_and(|p| p.maximized)
     });
     assert!(
-        !shown(cx, "tab-overview"),
-        "the header and machine list are hidden while maximized"
+        !shown(cx, "collect") && !shown(cx, "add-vm"),
+        "the machine header and list are hidden while maximized"
     );
+    assert!(shown(cx, "tab-overview"), "the top bar's views stay, to leave by");
 
     click(cx, "terminal-max");
     wait(cx, &view, "the restored pane", |v| {
         v.terminal.as_ref().is_some_and(|p| !p.maximized)
     });
-    assert!(shown(cx, "tab-overview"));
+    assert!(shown(cx, "collect"));
 }
 
 fn leaf_ids(node: &TerminalNode) -> Vec<u64> {
@@ -1378,9 +1379,10 @@ fn the_machine_list_hides_and_shows(cx: &mut TestAppContext) {
     let (view, cx) = open_lab(cx, &env);
     assert!(shown(cx, "add-vm"), "the machine list starts open");
 
-    click(cx, "toggle-machines-sidebar");
+    click(cx, "toggle-machines-title");
     wait(cx, &view, "the list to hide", |v| !v.show_machines);
-    assert!(!shown(cx, "add-vm"), "the machine list is gone");
+    assert!(!shown(cx, "add-vm"), "the full machine list is gone");
+    assert!(shown(cx, "rail"), "a rail of initials takes its place");
 
     cx.simulate_keystrokes("ctrl-shift-b");
     wait(cx, &view, "the list to come back", |v| v.show_machines);

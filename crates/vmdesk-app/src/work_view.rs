@@ -5,9 +5,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Local, Utc};
-use gpui::{
-    Context, Div, ElementId, Entity, FontWeight, SharedString, Stateful, div, prelude::*, px, rgb,
-};
+use gpui::{Context, Div, ElementId, Entity, FontWeight, Stateful, div, prelude::*, px, rgb};
 use vmdesk_collect::work::{Anchor, CurrentWork};
 use vmdesk_core::human::{day, duration, time_on};
 use vmdesk_db::{Line, Note, NoteId, SessionId, Span, WorkSession, code, plain, text_of};
@@ -324,13 +322,6 @@ fn inline(line: &[Span], size: gpui::Pixels) -> impl Iterator<Item = Div> + '_ {
     })
 }
 
-fn heading(content: &'static str) -> Div {
-    div()
-        .text_size(text::SECTION)
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(content)
-}
-
 /// The keys an inline field answers to.
 fn field_hint() -> Div {
     label("Enter saves · Esc cancels").flex_shrink_0()
@@ -394,11 +385,17 @@ fn facts_row(facts: &[Line]) -> Div {
         .flex()
         .flex_wrap()
         .items_center()
-        .gap_x(px(6.))
+        .gap(px(6.))
         .text_color(rgb(palette().text_secondary))
-        .children(facts.iter().enumerate().flat_map(|(i, f)| {
-            let dot = (i > 0).then(|| div().text_size(text::META).child("·"));
-            dot.into_iter().chain(std::iter::once(fact_line(f)))
+        .children(facts.iter().map(|f| {
+            div()
+                .h(px(24.))
+                .px(px(9.))
+                .flex()
+                .items_center()
+                .rounded(radius::M)
+                .bg(rgb(palette().bg))
+                .child(fact_line(f))
         }))
 }
 
@@ -441,7 +438,7 @@ fn doing_view(doing: &Doing) -> Div {
                         .min_w_0()
                         .overflow_hidden()
                         .font_weight(FontWeight::MEDIUM)
-                        .children(inline(what, text::SECTION)),
+                        .children(inline(what, px(18.))),
                 )
                 .when(!facts.is_empty(), |d| d.child(facts_row(facts)))
         }
@@ -454,17 +451,29 @@ pub fn card_view(
     adding: Option<&Entity<TextField>>,
     cx: &mut Context<AppView>,
 ) -> Div {
-    card()
+    div()
         .debug_selector(|| "work-card".to_owned())
-        .p(space::L)
+        .flex()
+        .flex_col()
+        .p(space::XL)
         .gap(space::M)
+        .rounded(px(14.))
+        .border_1()
+        .border_color(rgb(palette().border_strong))
+        .bg(rgb(palette().elevated))
         .child(
             div()
                 .h(px(24.))
                 .flex()
                 .items_center()
                 .gap(space::S)
-                .child(heading("Current work"))
+                .child(
+                    div()
+                        .text_size(text::SMALL)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(palette().accent))
+                        .child("YOU WERE WORKING ON"),
+                )
                 .child(div().flex_1())
                 .when(adding.is_none(), |d| {
                     d.child(
@@ -699,16 +708,6 @@ pub fn sessions_view(
                         .children(view.other_notes.iter().map(|n| note_view(n, cx))),
                 )
         })
-}
-
-/// What a sidebar row says it was doing, muted and on one line.
-pub fn sidebar_line(vm_name: &str, line: &str) -> Div {
-    let selector = format!("{vm_name} work: {line}");
-    label(SharedString::from(line.to_owned()))
-        .debug_selector(move || selector)
-        .whitespace_nowrap()
-        .overflow_hidden()
-        .text_ellipsis()
 }
 
 #[cfg(test)]
